@@ -1,0 +1,63 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 112 112" shape-rendering="crispEdges" role="img" aria-label="NoGaReader pixel icon">
+  <!-- 16x16 pixel icon, each cell = 7px -->
+  <defs>
+    <linearGradient id="tile" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#3B82F6"/>
+      <stop offset="100%" stop-color="#1D4ED8"/>
+    </linearGradient>
+  </defs>
+
+  <!-- rounded-ish tile via outer cells -->
+  <rect width="112" height="112" fill="url(#tile)"/>
+
+  <!-- soft corners (darker edge pixels) -->
+  <rect x="0" y="0" width="7" height="7" fill="#1E40AF"/>
+  <rect x="105" y="0" width="7" height="7" fill="#1E40AF"/>
+  <rect x="0" y="105" width="7" height="7" fill="#1E3A8A"/>
+  <rect x="105" y="105" width="7" height="7" fill="#1E3A8A"/>
+
+  <!-- open book body -->
+  <!-- left cover -->
+  <rect x="21" y="35" width="7" height="42" fill="#1E3A8A"/>
+  <rect x="28" y="28" width="21" height="56" fill="#1E40AF"/>
+  <rect x="28" y="35" width="21" height="42" fill="#F8FAFC"/>
+  <!-- left text lines (novel) -->
+  <rect x="32" y="42" width="14" height="3" fill="#94A3B8"/>
+  <rect x="32" y="49" width="12" height="3" fill="#CBD5E1"/>
+  <rect x="32" y="56" width="14" height="3" fill="#94A3B8"/>
+  <rect x="32" y="63" width="10" height="3" fill="#CBD5E1"/>
+
+  <!-- spine -->
+  <rect x="49" y="28" width="7" height="56" fill="#172554"/>
+  <rect x="49" y="35" width="7" height="42" fill="#1E3A8A"/>
+
+  <!-- right cover / manga page -->
+  <rect x="56" y="28" width="21" height="56" fill="#1E40AF"/>
+  <rect x="56" y="35" width="21" height="42" fill="#F1F5F9"/>
+  <!-- manga panel blocks -->
+  <rect x="60" y="39" width="14" height="10" fill="#DBEAFE"/>
+  <rect x="62" y="41" width="5" height="5" fill="#2563EB"/>
+  <rect x="68" y="41" width="4" height="3" fill="#93C5FD"/>
+  <rect x="60" y="52" width="14" height="8" fill="#E2E8F0"/>
+  <rect x="62" y="54" width="10" height="2" fill="#64748B"/>
+  <rect x="62" y="58" width="7" height="2" fill="#94A3B8"/>
+
+  <!-- right cover edge -->
+  <rect x="77" y="35" width="7" height="42" fill="#1E3A8A"/>
+
+  <!-- speech bubble (manga) -->
+  <rect x="77" y="14" width="21" height="14" fill="#FFFFFF"/>
+  <rect x="84" y="28" width="7" height="7" fill="#FFFFFF"/>
+  <rect x="82" y="18" width="3" height="3" fill="#2563EB"/>
+  <rect x="88" y="18" width="3" height="3" fill="#2563EB"/>
+  <rect x="94" y="18" width="3" height="3" fill="#2563EB"/>
+
+  <!-- sparkles -->
+  <rect x="14" y="84" width="3" height="3" fill="#BFDBFE"/>
+  <rect x="11" y="87" width="9" height="3" fill="#BFDBFE"/>
+  <rect x="14" y="90" width="3" height="3" fill="#BFDBFE"/>
+
+  <rect x="91" y="84" width="3" height="3" fill="#93C5FD"/>
+  <rect x="88" y="87" width="9" height="3" fill="#93C5FD"/>
+  <rect x="91" y="90" width="3" height="3" fill="#93C5FD"/>
+</svg>

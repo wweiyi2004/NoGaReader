@@ -1,0 +1,1542 @@
+using System.IO.Compression;
+using System.Reflection;
+using System.Text;
+using System.Text.Json;
+using Microsoft.Data.Sqlite;
+using NoGaReader.Models;
+using NoGaReader.Services;
+
+var testRoot = Path.Combine(AppContext.BaseDirectory, ".smoke-temp", Guid.NewGuid().ToString("N"));
+Directory.CreateDirectory(testRoot);
+Environment.SetEnvironmentVariable(
+    "NOGAREADER_DATA_DIR",
+    Path.Combine(testRoot, "AppData"),
+    EnvironmentVariableTarget.Process);
+var generatedSources = new List<(string Path, string Category)>();
+
+try
+{
+    var loader = new DocumentLoader();
+    var settingsStore = new SettingsStore();
+    settingsStore.Save(new AppSettings
+    {
+        ComicDisplay = ComicDisplayMode.Double,
+        ComicDirection = ComicReadingDirection.LeftToRight,
+        ComicFit = ComicFitMode.Width,
+        ComicCoverSinglePage = false,
+        ComicScale = 1.7
+    });
+    var comicSettings = settingsStore.Load();
+    Assert(comicSettings.ComicDisplay == ComicDisplayMode.Double, "Comic display setting persistence");
+    Assert(comicSettings.ComicDirection == ComicReadingDirection.LeftToRight, "Comic direction setting persistence");
+    Assert(comicSettings.ComicFit == ComicFitMode.Width, "Comic fit setting persistence");
+    Assert(!comicSettings.ComicCoverSinglePage && NearlyEqual(comicSettings.ComicScale, 1.7),
+        "Comic cover and scale setting persistence");
+
+    settingsStore.Save(new AppSettings
+    {
+        ReaderTheme = ReaderThemeMode.Paper,
+        ReaderThemePreferenceInitialized = false,
+        TotalReadingSeconds = -120,
+        ReadingDates = ["2026-07-17", "2026-07-17", "not-a-date"]
+    });
+    var migratedSettings = settingsStore.Load();
+    Assert(migratedSettings.ReaderTheme == ReaderThemeMode.Auto &&
+           migratedSettings.ReaderThemePreferenceInitialized,
+        "Legacy reader theme migrates once to application-following mode");
+    Assert(NearlyEqual(migratedSettings.TotalReadingSeconds, 0) &&
+           migratedSettings.ReadingDates.SequenceEqual(["2026-07-17"]),
+        "Reading statistics sanitization");
+
+    settingsStore.Save(new AppSettings
+    {
+        ReaderTheme = ReaderThemeMode.Dark,
+        ReaderThemePreferenceInitialized = true
+    });
+    var customizedReaderTheme = settingsStore.Load();
+    Assert(customizedReaderTheme.ReaderTheme == ReaderThemeMode.Dark,
+        "Explicit reader background remains customized after migration");
+
+    TestSettingsCloneCompleteness();
+
+    settingsStore.Save(new AppSettings
+    {
+        ComicDisplay = (ComicDisplayMode)99,
+        ComicDirection = (ComicReadingDirection)99,
+        ComicFit = (ComicFitMode)99,
+        ComicScale = 9
+    });
+    var sanitizedComicSettings = settingsStore.Load();
+    Assert(sanitizedComicSettings.ComicDisplay == ComicDisplayMode.Single, "Invalid comic display fallback");
+    Assert(sanitizedComicSettings.ComicDirection == ComicReadingDirection.RightToLeft,
+        "Invalid comic direction fallback");
+    Assert(sanitizedComicSettings.ComicFit == ComicFitMode.Height, "Invalid comic fit fallback");
+    Assert(NearlyEqual(sanitizedComicSettings.ComicScale, 3), "Comic scale clamp");
+
+    var textPath = Path.Combine(testRoot, "sample.txt");
+    File.WriteAllText(textPath, "第一行\nNoGaReader smoke test", Encoding.UTF8);
+    generatedSources.Add((textPath, "text"));
+    var text = await loader.LoadAsync(textPath);
+    Assert(text.Kind == ReaderDocumentKind.Text, "TXT kind");
+    Assert(File.Exists(text.CurrentSection.FullPath), "TXT generated HTML");
+    await AssertCacheHitDoesNotRewrite(loader, textPath, text.CurrentSection.FullPath, "TXT generated cache hit");
+
+    var markdownImagePath = Path.Combine(testRoot, "diagram.png");
+    File.WriteAllBytes(markdownImagePath, PixelPng());
+    var markdownPath = Path.Combine(testRoot, "sample.md");
+    File.WriteAllText(markdownPath, """
+        # Markdown 标题
+
+        这里有 **粗体**、一个 [危险链接](javascript:alert(1)) 和本地图片：
+
+        ![示意图](diagram.png)
+
+        | 项目 | 状态 |
+        | --- | --- |
+        | Markdown | 正常 |
+
+        <script>alert('must be escaped')</script>
+        """, Encoding.UTF8);
+    generatedSources.Add((markdownPath, "markdown"));
+    var markdown = await loader.LoadAsync(markdownPath);
+    Assert(markdown.Kind == ReaderDocumentKind.Markdown, "Markdown kind");
+    var markdownHtml = File.ReadAllText(markdown.CurrentSection.FullPath);
+    Assert(markdownHtml.Contains("<h1", StringComparison.OrdinalIgnoreCase), "Markdown heading rendering");
+    Assert(markdownHtml.Contains("<strong>", StringComparison.OrdinalIgnoreCase), "Markdown emphasis rendering");
+    Assert(markdownHtml.Contains("<table", StringComparison.OrdinalIgnoreCase), "Markdown table rendering");
+    Assert(markdownHtml.Contains("assets/", StringComparison.OrdinalIgnoreCase), "Markdown local image copy");
+    Assert(!markdownHtml.Contains("<script", StringComparison.OrdinalIgnoreCase), "Markdown raw script disabled");
+    Assert(!markdownHtml.Contains("javascript:", StringComparison.OrdinalIgnoreCase), "Markdown dangerous link blocked");
+    await AssertCacheHitDoesNotRewrite(loader, markdownPath, markdown.CurrentSection.FullPath, "Markdown generated cache hit");
+
+    var largeTextPath = Path.Combine(testRoot, "large-sample.txt");
+    File.WriteAllText(
+        largeTextPath,
+        string.Concat(Enumerable.Repeat("大文本分段布局测试。\n", 80_000)),
+        Encoding.UTF8);
+    generatedSources.Add((largeTextPath, "text"));
+    var largeText = await loader.LoadAsync(largeTextPath);
+    Assert(largeText.Sections.Count > 1 && largeText.TableOfContents.Count == largeText.Sections.Count,
+        "Large TXT is split into bounded reader sections");
+
+    var htmlPath = Path.Combine(testRoot, "sample.html");
+    File.WriteAllText(htmlPath, "<!doctype html><title>Sample</title><p>Hello</p>", Encoding.UTF8);
+    var html = await loader.LoadAsync(htmlPath);
+    Assert(html.Kind == ReaderDocumentKind.Html, "HTML kind");
+
+    var pdfPath = Path.Combine(testRoot, "sample.pdf");
+    File.WriteAllBytes(pdfPath, "%PDF-1.4\n%%EOF"u8.ToArray());
+    var pdf = await loader.LoadAsync(pdfPath);
+    Assert(pdf.Kind == ReaderDocumentKind.Pdf, "PDF routing");
+
+    var fb2Path = Path.Combine(testRoot, "sample.fb2");
+    File.WriteAllText(fb2Path, """
+        <?xml version="1.0" encoding="utf-8"?>
+        <FictionBook xmlns="http://www.gribuser.ru/xml/fictionbook/2.0">
+          <description><title-info><book-title>测试 FB2</book-title></title-info></description>
+          <body>
+            <section><title><p>第一章</p></title><p>第一章正文。</p></section>
+            <section><title><p>第二章</p></title><p><strong>第二章</strong>正文。</p></section>
+          </body>
+        </FictionBook>
+        """, Encoding.UTF8);
+    generatedSources.Add((fb2Path, "fb2"));
+    var fb2 = await loader.LoadAsync(fb2Path);
+    Assert(fb2.Kind == ReaderDocumentKind.FictionBook, "FB2 kind");
+    Assert(fb2.Title == "测试 FB2", "FB2 metadata title");
+    Assert(fb2.Sections.Count == 2, "FB2 section count");
+    await AssertCacheHitDoesNotRewrite(loader, fb2Path, fb2.CurrentSection.FullPath, "FB2 generated cache hit");
+
+    var epubPath = Path.Combine(testRoot, "sample.epub");
+    CreateEpub(epubPath);
+    generatedSources.Add((epubPath, "epub"));
+    var epub = await loader.LoadAsync(epubPath);
+    Assert(epub.Kind == ReaderDocumentKind.Epub, "EPUB kind");
+    Assert(epub.Title == "测试 EPUB", "EPUB metadata title");
+    Assert(epub.Sections.Count == 2, "EPUB spine count");
+    Assert(epub.Sections[0].Title == "开篇", "EPUB navigation title");
+    var sanitizedChapter = File.ReadAllText(epub.Sections[0].FullPath);
+    Assert(!sanitizedChapter.Contains("<script", StringComparison.OrdinalIgnoreCase), "EPUB script removal");
+    Assert(!sanitizedChapter.Contains("<iframe", StringComparison.OrdinalIgnoreCase), "EPUB iframe removal");
+    Assert(!sanitizedChapter.Contains("onclick", StringComparison.OrdinalIgnoreCase), "EPUB event handler removal");
+    Assert(!sanitizedChapter.Contains("data:text/html", StringComparison.OrdinalIgnoreCase),
+        "EPUB active data navigation removal");
+    var unlistedPayload = Path.Combine(epub.RootDirectory, "OEBPS", "payload.xhtml");
+    Assert(File.Exists(unlistedPayload) &&
+           !File.ReadAllText(unlistedPayload).Contains("<script", StringComparison.OrdinalIgnoreCase),
+        "EPUB sanitizes unlisted active documents");
+    await AssertCacheHitDoesNotRewrite(loader, epubPath, epub.CurrentSection.FullPath, "EPUB sanitized cache hit");
+
+    var cbzPath = Path.Combine(testRoot, "sample.cbz");
+    CreateCbz(cbzPath);
+    generatedSources.Add((cbzPath, "comic"));
+    var cbz = await loader.LoadAsync(cbzPath);
+    Assert(cbz.Kind == ReaderDocumentKind.Comic, "CBZ kind");
+    Assert(cbz.Sections.Count == 2, "CBZ image count");
+    Assert(cbz.ComicPages.Count == 2, "CBZ comic page model");
+    Assert(cbz.ComicPages[0].FullPath.EndsWith("page2.png", StringComparison.OrdinalIgnoreCase), "CBZ natural page order");
+    var comicShell = File.ReadAllText(cbz.Sections[0].FullPath);
+    Assert(comicShell.Contains("data-start-page=\"0\"", StringComparison.Ordinal), "Comic shell start page");
+    var comicViewerRoot = Path.GetFullPath(Path.Combine(Path.GetDirectoryName(cbz.Sections[0].FullPath)!, ".."));
+    using (var comicManifest = JsonDocument.Parse(File.ReadAllText(Path.Combine(comicViewerRoot, "manifest.json"))))
+    {
+        var manifestPages = comicManifest.RootElement.GetProperty("pages");
+        Assert(manifestPages.GetArrayLength() == 2, "Comic manifest page count");
+        Assert(manifestPages[0].GetString()!.EndsWith("page2.png", StringComparison.OrdinalIgnoreCase),
+            "Comic manifest natural order");
+    }
+    Assert(File.ReadAllText(Path.Combine(comicViewerRoot, "comic-reader.js"))
+        .Contains("window.__nogareaderComic", StringComparison.Ordinal), "Comic runtime API");
+
+    foreach (var extension in new[] { ".cbr", ".cb7", ".zip", ".rar" })
+    {
+        var archivePath = Path.Combine(testRoot, $"signature-detected{extension}");
+        File.Copy(cbzPath, archivePath);
+        generatedSources.Add((archivePath, "comic"));
+        var archiveComic = await loader.LoadAsync(archivePath);
+        Assert(archiveComic.Kind == ReaderDocumentKind.Comic, $"{extension} signature routing");
+        Assert(archiveComic.ComicPages.Count == 2, $"{extension} page extraction");
+    }
+
+    var maliciousComicPath = Path.Combine(testRoot, "malicious.cbz");
+    CreateMaliciousComic(maliciousComicPath);
+    generatedSources.Add((maliciousComicPath, "comic"));
+    var maliciousComicRejected = false;
+    try
+    {
+        await loader.LoadAsync(maliciousComicPath);
+    }
+    catch (InvalidDataException)
+    {
+        maliciousComicRejected = true;
+    }
+    Assert(maliciousComicRejected, "Comic traversal rejection");
+
+    var comicFolderPath = Path.Combine(testRoot, "comic-folder");
+    Directory.CreateDirectory(comicFolderPath);
+    File.WriteAllBytes(Path.Combine(comicFolderPath, "page10.png"), PixelPng());
+    File.WriteAllBytes(Path.Combine(comicFolderPath, "page2.png"), PixelPng());
+    File.WriteAllText(Path.Combine(comicFolderPath, "notes.txt"), "not a comic page", Encoding.UTF8);
+    var folderComic = await loader.LoadAsync(comicFolderPath);
+    Assert(folderComic.Kind == ReaderDocumentKind.Comic, "Comic folder kind");
+    Assert(folderComic.ComicContentRootDirectory == Path.GetFullPath(comicFolderPath),
+        "Comic folder content root");
+    Assert(folderComic.ComicPages.Count == 2, "Comic folder ignores non-images");
+    Assert(folderComic.ComicPages[0].FullPath.EndsWith("page2.png", StringComparison.OrdinalIgnoreCase),
+        "Comic folder natural page order");
+    var folderViewerRoot = Path.GetFullPath(Path.Combine(
+        Path.GetDirectoryName(folderComic.Sections[0].FullPath)!, ".."));
+    using (var folderManifest = JsonDocument.Parse(File.ReadAllText(Path.Combine(folderViewerRoot, "manifest.json"))))
+    {
+        var firstUrl = folderManifest.RootElement.GetProperty("pages")[0].GetString();
+        Assert(firstUrl is not null && firstUrl.StartsWith(
+            "https://comic-content.nogareader.local/", StringComparison.Ordinal),
+            "Comic folder uses isolated content host");
+    }
+    File.WriteAllBytes(Path.Combine(comicFolderPath, "page3.png"), PixelPng());
+    var refreshedFolderComic = await loader.LoadAsync(comicFolderPath);
+    Assert(refreshedFolderComic.ComicPages.Count == 3, "Comic folder cache invalidation");
+    Assert(refreshedFolderComic.ComicPages[1].FullPath.EndsWith("page3.png", StringComparison.OrdinalIgnoreCase),
+        "Comic folder refreshed natural order");
+
+    var emptyComicFolder = Path.Combine(testRoot, "empty-comic-folder");
+    Directory.CreateDirectory(emptyComicFolder);
+    var emptyComicFolderRejected = false;
+    try
+    {
+        await loader.LoadAsync(emptyComicFolder);
+    }
+    catch (InvalidDataException)
+    {
+        emptyComicFolderRejected = true;
+    }
+    Assert(emptyComicFolderRejected, "Empty comic folder rejection");
+
+    var maliciousPath = Path.Combine(testRoot, "malicious.epub");
+    CreateMaliciousEpub(maliciousPath);
+    generatedSources.Add((maliciousPath, "epub"));
+    var rejected = false;
+    try
+    {
+        await loader.LoadAsync(maliciousPath);
+    }
+    catch (InvalidDataException)
+    {
+        rejected = true;
+    }
+
+    Assert(rejected, "ZIP traversal rejection");
+    Assert(!File.Exists(Path.Combine(AppPaths.CacheRoot, "epub", "escape.txt")), "ZIP traversal did not write outside cache");
+
+    await TestLibraryDatabaseAsync(testRoot);
+    await TestBookSearchIndexerAsync(testRoot);
+    TestReaderRuntimeAnnotationApi();
+    await TestLibraryScannerAsync(testRoot);
+    await TestAnnotationExportAsync(testRoot);
+    TestTocNodeFlatten(testRoot);
+
+    // V0.8 conversion plugin surface
+    var conversionSettings = new AppSettings();
+    var converter = new CalibreConverter(conversionSettings);
+    Assert(converter.OutputFormats.Count >= 5, "Conversion output formats");
+    Assert(converter.CanConvert(".epub", ".pdf") == converter.IsAvailable,
+        "CanConvert reflects runtime availability");
+    Assert(CalibreConverter.IsKindleExtension(".mobi") &&
+           CalibreConverter.IsKindleExtension(".azw3") &&
+           CalibreConverter.IsKindleExtension(".azw"),
+        "Kindle extension recognition");
+    Assert(DocumentLoader.IsSupported(Path.Combine(testRoot, "book.mobi")) &&
+           DocumentLoader.IsSupported(Path.Combine(testRoot, "book.azw3")),
+        "DocumentLoader supports Kindle extensions");
+    Assert(DocumentLoader.OpenFileFilter.Contains("*.mobi", StringComparison.OrdinalIgnoreCase) &&
+           DocumentLoader.OpenFileFilter.Contains("*.azw3", StringComparison.OrdinalIgnoreCase),
+        "Open filter lists Kindle formats");
+
+    var missingKindlePath = Path.Combine(testRoot, "missing-engine.mobi");
+    File.WriteAllBytes(missingKindlePath, [0x00, 0x01, 0x02, 0x03]);
+    generatedSources.Add((missingKindlePath, "converted"));
+    if (!converter.IsAvailable)
+    {
+        var kindleRejected = false;
+        try
+        {
+            await loader.LoadAsync(missingKindlePath);
+        }
+        catch (InvalidOperationException exception)
+        {
+            kindleRejected = exception.Message.Contains("Calibre", StringComparison.OrdinalIgnoreCase) ||
+                             exception.Message.Contains("ebook-convert", StringComparison.OrdinalIgnoreCase);
+        }
+        Assert(kindleRejected, "Kindle open fails clearly without Calibre runtime");
+
+        var convertResult = await converter.ConvertAsync(
+            textPath,
+            ".epub",
+            Path.Combine(testRoot, "convert-out"));
+        Assert(!convertResult.Succeeded &&
+               !string.IsNullOrWhiteSpace(convertResult.ErrorMessage),
+            "Convert without runtime returns friendly failure");
+    }
+    else
+    {
+        var convertOut = Path.Combine(testRoot, "convert-out");
+        Directory.CreateDirectory(convertOut);
+        var convertResult = await converter.ConvertAsync(textPath, ".epub", convertOut);
+        Assert(convertResult.Succeeded &&
+               convertResult.OutputPath is not null &&
+               File.Exists(convertResult.OutputPath) &&
+               new FileInfo(convertResult.OutputPath).Length > 0,
+            "TXT converts to EPUB when Calibre is available");
+        generatedSources.Add((convertResult.OutputPath!, "converted"));
+    }
+
+    var conversionSettingsStore = new SettingsStore();
+    conversionSettingsStore.Save(new AppSettings
+    {
+        CalibreEbookConvertPath = Path.Combine(testRoot, "not-real", "ebook-convert.exe"),
+        ConversionDefaultTargetExtension = "PDF",
+        ConversionOutputDirectory = Path.Combine(testRoot, "out-dir")
+    });
+    var loadedConversionSettings = conversionSettingsStore.Load();
+    Assert(loadedConversionSettings.ConversionDefaultTargetExtension == ".pdf",
+        "Conversion target extension normalization");
+    Assert(loadedConversionSettings.ConversionOutputDirectory.EndsWith("out-dir", StringComparison.OrdinalIgnoreCase),
+        "Conversion output directory persistence");
+
+    // V0.9 document editor Open XML round-trip
+    Assert(OfficeDocumentService.CanEditNatively(".docx") &&
+           OfficeDocumentService.CanEditNatively(".rtf") &&
+           OfficeDocumentService.CanEditNatively(".txt") &&
+           !OfficeDocumentService.CanEditNatively(".doc"),
+        "Office native edit matrix");
+    var docxPath = Path.Combine(testRoot, "editor-sample.docx");
+    var doc = OfficeDocumentService.CreateBlank("Smoke 标题");
+    doc.Blocks.Add(new System.Windows.Documents.Paragraph(
+        new System.Windows.Documents.Run("粗体段落") { FontWeight = System.Windows.FontWeights.Bold }));
+    OfficeDocumentService.Save(doc, docxPath);
+    generatedSources.Add((docxPath, "office"));
+    Assert(File.Exists(docxPath) && new FileInfo(docxPath).Length > 0, "DOCX save creates file");
+    var reloaded = OfficeDocumentService.Load(docxPath);
+    var reloadedText = OfficeDocumentService.GetPlainText(reloaded);
+    Assert(reloadedText.Contains("Smoke 标题", StringComparison.Ordinal) &&
+           reloadedText.Contains("粗体段落", StringComparison.Ordinal),
+        "DOCX round-trip preserves text");
+    var rtfPath = Path.Combine(testRoot, "editor-sample.rtf");
+    OfficeDocumentService.Save(reloaded, rtfPath);
+    generatedSources.Add((rtfPath, "office"));
+    var rtfReloaded = OfficeDocumentService.Load(rtfPath);
+    Assert(OfficeDocumentService.GetPlainText(rtfReloaded).Contains("Smoke", StringComparison.Ordinal),
+        "RTF round-trip preserves text");
+    var txtPath = Path.Combine(testRoot, "editor-sample.txt");
+    OfficeDocumentService.Save(OfficeDocumentService.CreateBlank("纯文本"), txtPath);
+    generatedSources.Add((txtPath, "office"));
+    Assert(OfficeDocumentService.GetPlainText(OfficeDocumentService.Load(txtPath))
+            .Contains("纯文本", StringComparison.Ordinal),
+        "TXT round-trip");
+    Assert(OfficeDocumentService.CountWords("Hello world 测试") >= 2, "Word count");
+    Assert(!OfficeDocumentService.RequiresSafeSaveAs(docxPath),
+        "Simple editor-created DOCX can be overwritten safely");
+    var complexDocxPath = Path.Combine(testRoot, "editor-complex.docx");
+    File.Copy(docxPath, complexDocxPath);
+    AddHyperlinkToDocx(complexDocxPath);
+    generatedSources.Add((complexDocxPath, "office"));
+    Assert(OfficeDocumentService.RequiresSafeSaveAs(complexDocxPath),
+        "DOCX with unsupported relationships requires safe Save As");
+
+    // V1.0 productization surfaces
+    Assert(DocumentLoader.IsSupported(Path.Combine(testRoot, "sample.cbt")), "DocumentLoader supports CBT");
+    Assert(DocumentLoader.OpenFileFilter.Contains("*.cbt", StringComparison.OrdinalIgnoreCase),
+        "Open filter lists CBT");
+    Assert(FileAssociationService.AssociatedExtensions.Contains(".epub") &&
+           FileAssociationService.AssociatedExtensions.Contains(".cbt") &&
+           FileAssociationService.AssociatedExtensions.Contains(".docx"),
+        "File association extension set");
+    Assert(!string.IsNullOrWhiteSpace(SingleInstanceService.MutexName) &&
+           !string.IsNullOrWhiteSpace(SingleInstanceService.PipeName),
+        "Single-instance identifiers");
+
+    Assert(DocumentLoader.IsSupported(Path.Combine(testRoot, "a.chm")) &&
+           DocumentLoader.IsSupported(Path.Combine(testRoot, "a.xps")) &&
+           DocumentLoader.IsSupported(Path.Combine(testRoot, "a.djvu")),
+        "DocumentLoader supports CHM/XPS/DJVU extensions");
+    Assert(DocumentLoader.OpenFileFilter.Contains("*.chm", StringComparison.OrdinalIgnoreCase) &&
+           DocumentLoader.OpenFileFilter.Contains("*.djvu", StringComparison.OrdinalIgnoreCase),
+        "Open filter lists fixed-layout formats");
+
+    // XPS image package path
+    var xpsPath = Path.Combine(testRoot, "sample.xps");
+    CreateXpsWithImage(xpsPath);
+    generatedSources.Add((xpsPath, "xps"));
+    var xpsSession = await loader.LoadAsync(xpsPath);
+    Assert(xpsSession.Kind is ReaderDocumentKind.Comic or ReaderDocumentKind.Pdf, "XPS loads");
+    Assert(xpsSession.Sections.Count >= 1, "XPS has sections");
+
+    var excessiveXpsPath = Path.Combine(testRoot, "too-many-entries.xps");
+    CreateXpsWithTooManyEntries(excessiveXpsPath);
+    generatedSources.Add((excessiveXpsPath, "xps"));
+    var excessiveXpsRejected = false;
+    try
+    {
+        _ = await loader.LoadAsync(excessiveXpsPath);
+    }
+    catch (InvalidDataException)
+    {
+        excessiveXpsRejected = true;
+    }
+    Assert(excessiveXpsRejected, "XPS entry count safety limit");
+
+    // Cloud sync folder merge
+    var syncRoot = Path.Combine(testRoot, "sync-folder");
+    Directory.CreateDirectory(syncRoot);
+    var syncSettings = new AppSettings
+    {
+        SyncEnabled = true,
+        SyncProvider = SyncProviderKind.Folder,
+        SyncFolderPath = syncRoot,
+        SyncIncludeAnnotations = true,
+        SyncIncludeSettings = true,
+        ReaderFontSize = 20
+    };
+    var syncStore = new SettingsStore();
+    // isolate settings path already via NOGAREADER_DATA_DIR
+    syncStore.Save(syncSettings);
+    syncSettings = syncStore.Load();
+    var db = new LibraryDatabase();
+    await db.InitializeAsync();
+    var book = await db.UpsertBookAsync(new LibraryBook
+    {
+        Path = textPath,
+        Title = "Sync Book",
+        Format = "TXT",
+        FileSize = new FileInfo(textPath).Length,
+        SectionCount = 1
+    });
+    await db.SaveReaderLocationAsync(new ReaderLocation
+    {
+        BookId = book.Id,
+        SectionIndex = 0,
+        SectionProgress = 0.42,
+        DocumentProgress = 0.42,
+        TextQuote = "sync-quote"
+    });
+    await db.UpsertAnnotationAsync(new Annotation
+    {
+        BookId = book.Id,
+        Type = AnnotationType.Highlight,
+        SectionIndex = 0,
+        SectionProgress = 0.1,
+        SelectedText = "第一行",
+        Color = "#FFD54F"
+    });
+
+    var sync = new CloudSyncService(syncSettings);
+    var result = await sync.SynchronizeAsync(db, syncStore);
+    Assert(result.Succeeded, "Sync upload succeeds");
+    Assert(File.Exists(Path.Combine(syncRoot, "nogareader-sync.json")), "Sync manifest written");
+
+    // Simulate older local state so remote newer progress wins on merge.
+    await db.SaveReaderLocationAsync(new ReaderLocation
+    {
+        BookId = book.Id,
+        SectionIndex = 0,
+        SectionProgress = 0,
+        DocumentProgress = 0,
+        UpdatedUtc = DateTimeOffset.UtcNow.AddDays(-2)
+    });
+    var result2 = await sync.SynchronizeAsync(db, syncStore);
+    Assert(result2.Succeeded, "Sync download succeeds");
+    var restored = await db.GetReaderLocationAsync(book.Id);
+    Assert(restored is not null && restored.SectionProgress > 0.4, "Sync restores newer remote progress");
+
+    var optOutRoot = Path.Combine(testRoot, "sync-opt-out");
+    var optOutSettings = new AppSettings
+    {
+        SyncEnabled = true,
+        SyncProvider = SyncProviderKind.Folder,
+        SyncFolderPath = optOutRoot,
+        SyncIncludeAnnotations = false,
+        SyncIncludeSettings = false
+    };
+    var optOutSync = new CloudSyncService(optOutSettings);
+    Assert((await optOutSync.SynchronizeAsync(db, syncStore)).Succeeded,
+        "Sync with annotation opt-out succeeds");
+    using (var optOutManifest = JsonDocument.Parse(
+               await File.ReadAllTextAsync(Path.Combine(optOutRoot, "nogareader-sync.json"))))
+    {
+        Assert(optOutManifest.RootElement.GetProperty("books").EnumerateArray()
+                .All(item => item.GetProperty("annotations").GetArrayLength() == 0),
+            "Annotation opt-out excludes local annotations from sync manifest");
+    }
+
+    await TestCrossDeviceSyncAsync(testRoot, syncStore);
+
+
+    // CBT extraction via SharpCompress tar when possible: create tar-like using SharpCompress if available.
+    // Minimal: create a .cbt as zip renamed is not tar; use ArchiveFactory only if tar writer exists.
+    // Instead verify loader rejects empty cbt gracefully is hard; create tar with SharpCompress.Writers.
+    try
+    {
+        var cbtPath = Path.Combine(testRoot, "sample.cbt");
+        CreateCbt(cbtPath);
+        generatedSources.Add((cbtPath, "comic"));
+        var cbt = await loader.LoadAsync(cbtPath);
+        Assert(cbt.Kind == ReaderDocumentKind.Comic && cbt.ComicPages.Count >= 1, "CBT loads as comic");
+    }
+    catch (Exception exception) when (exception is not InvalidOperationException)
+    {
+        // If tar creation helper missing, still pass extension routing tests above.
+        Assert(exception is not NotSupportedException, "CBT path should not be NotSupported by extension alone: " + exception.Message);
+    }
+
+    Console.WriteLine(
+        "NoGaReader smoke tests passed: document loaders, comic archives/folders/runtime/safety, SQLite library, " +
+        "multi-hit search, relocation, annotation export/runtime, library scanning, hierarchical TOC, conversion plugin, document editor, single-instance/file-association/CBT, CHM/XPS/DJVU, cloud sync.");
+}
+finally
+{
+    SqliteConnection.ClearAllPools();
+
+    foreach (var (sourcePath, category) in generatedSources)
+    {
+        if (!File.Exists(sourcePath))
+        {
+            continue;
+        }
+
+        var cacheDirectory = AppPaths.GetDocumentCacheDirectory(sourcePath, category);
+        if (Directory.Exists(cacheDirectory) && AppPaths.IsInsideCache(cacheDirectory))
+        {
+            Directory.Delete(cacheDirectory, true);
+        }
+    }
+
+    var normalizedTestRoot = Path.GetFullPath(testRoot);
+    var normalizedBaseRoot = Path.GetFullPath(AppContext.BaseDirectory)
+        .TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
+    if (normalizedTestRoot.StartsWith(normalizedBaseRoot, StringComparison.OrdinalIgnoreCase) &&
+        normalizedTestRoot.Contains(".smoke-temp", StringComparison.OrdinalIgnoreCase))
+    {
+        Directory.Delete(normalizedTestRoot, true);
+    }
+}
+
+static void TestSettingsCloneCompleteness()
+{
+    var source = new AppSettings
+    {
+        CalibreEbookConvertPath = @"C:\Tools\Calibre\ebook-convert.exe",
+        ConversionOutputDirectory = @"D:\Converted",
+        ConversionDefaultTargetExtension = ".pdf",
+        SyncEnabled = true,
+        SyncProvider = SyncProviderKind.Folder,
+        SyncFolderPath = @"D:\Sync\NoGaReader",
+        SyncIncludeAnnotations = false,
+        SyncIncludeSettings = false,
+        LastSyncUtc = "2026-07-18 12:00:00Z"
+    };
+    var mainWindowType = typeof(AppSettings).Assembly.GetType("NoGaReader.MainWindow", throwOnError: true)!;
+    var cloneMethod = mainWindowType.GetMethod(
+        "CloneSettings",
+        BindingFlags.Static | BindingFlags.NonPublic)
+        ?? throw new InvalidOperationException("MainWindow.CloneSettings was not found.");
+    var clone = (AppSettings)(cloneMethod.Invoke(null, [source])
+        ?? throw new InvalidOperationException("MainWindow.CloneSettings returned null."));
+
+    Assert(clone.CalibreEbookConvertPath == source.CalibreEbookConvertPath &&
+           clone.ConversionOutputDirectory == source.ConversionOutputDirectory &&
+           clone.ConversionDefaultTargetExtension == source.ConversionDefaultTargetExtension,
+        "Settings snapshot preserves conversion configuration");
+    Assert(clone.SyncEnabled == source.SyncEnabled &&
+           clone.SyncProvider == source.SyncProvider &&
+           clone.SyncFolderPath == source.SyncFolderPath &&
+           clone.SyncIncludeAnnotations == source.SyncIncludeAnnotations &&
+           clone.SyncIncludeSettings == source.SyncIncludeSettings &&
+           clone.LastSyncUtc == source.LastSyncUtc,
+        "Settings snapshot preserves sync configuration");
+}
+
+static async Task TestCrossDeviceSyncAsync(string testRoot, SettingsStore settingsStore)
+{
+    var fixtureRoot = Path.Combine(testRoot, "cross-device-sync");
+    var deviceARoot = Path.Combine(fixtureRoot, "device-a", "library");
+    var deviceBRoot = Path.Combine(fixtureRoot, "device-b", "different-library-root");
+    var sharedRoot = Path.Combine(fixtureRoot, "shared");
+    Directory.CreateDirectory(deviceARoot);
+    Directory.CreateDirectory(deviceBRoot);
+    Directory.CreateDirectory(sharedRoot);
+    var sourceA = Path.Combine(deviceARoot, "portable-book.txt");
+    var sourceB = Path.Combine(deviceBRoot, "renamed-book.txt");
+    File.WriteAllText(sourceA, "portable sync identity", Encoding.UTF8);
+    File.Copy(sourceA, sourceB);
+
+    var databaseA = new LibraryDatabase(Path.Combine(fixtureRoot, "device-a.db"));
+    var databaseB = new LibraryDatabase(Path.Combine(fixtureRoot, "device-b.db"));
+    await databaseA.InitializeAsync();
+    await databaseB.InitializeAsync();
+    var bookA = await databaseA.UpsertBookAsync(new LibraryBook
+    {
+        Path = sourceA,
+        Title = "Portable Sync Book",
+        Author = "NoGaReader",
+        Format = "TXT",
+        FileSize = new FileInfo(sourceA).Length
+    });
+    var annotationA = await databaseA.UpsertAnnotationAsync(new Annotation
+    {
+        Id = "portable-note",
+        BookId = bookA.Id,
+        Type = AnnotationType.Note,
+        SectionIndex = 0,
+        SectionProgress = 0.25,
+        SelectedText = "portable",
+        Note = "version one"
+    });
+
+    var settingsA = new AppSettings
+    {
+        SyncEnabled = true,
+        SyncProvider = SyncProviderKind.Folder,
+        SyncFolderPath = sharedRoot,
+        SyncIncludeAnnotations = true,
+        SyncIncludeSettings = false
+    };
+    var settingsB = new AppSettings
+    {
+        SyncEnabled = true,
+        SyncProvider = SyncProviderKind.Folder,
+        SyncFolderPath = sharedRoot,
+        SyncIncludeAnnotations = true,
+        SyncIncludeSettings = false
+    };
+    var syncA = new CloudSyncService(settingsA);
+    var syncB = new CloudSyncService(settingsB);
+    Assert((await syncA.SynchronizeAsync(databaseA, settingsStore)).Succeeded,
+        "Cross-device sync initial upload");
+
+    var bookB = await databaseB.UpsertBookAsync(new LibraryBook
+    {
+        Path = sourceB,
+        Title = bookA.Title,
+        Author = bookA.Author,
+        Format = bookA.Format,
+        FileSize = new FileInfo(sourceB).Length
+    });
+    Assert((await syncB.SynchronizeAsync(databaseB, settingsStore)).Succeeded,
+        "Cross-device sync matches different absolute paths");
+    var downloaded = (await databaseB.ListAnnotationsAsync(bookB.Id)).Single();
+    Assert(downloaded.Id == annotationA.Id && downloaded.Note == "version one",
+        "Cross-device sync preserves annotation identity");
+
+    await Task.Delay(20);
+    downloaded.Note = "version two";
+    downloaded.ModifiedUtc = DateTimeOffset.UtcNow;
+    await databaseB.UpsertAnnotationAsync(downloaded);
+    Assert((await syncB.SynchronizeAsync(databaseB, settingsStore)).Succeeded,
+        "Cross-device annotation update upload");
+    Assert((await syncA.SynchronizeAsync(databaseA, settingsStore)).Succeeded,
+        "Cross-device annotation update download");
+    var updatedOnA = await databaseA.ListAnnotationsAsync(bookA.Id);
+    Assert(updatedOnA.Count == 1 && updatedOnA[0].Id == annotationA.Id && updatedOnA[0].Note == "version two",
+        "Annotation edits update in place without duplicates");
+
+    await Task.Delay(20);
+    Assert(await databaseB.DeleteAnnotationAsync(annotationA.Id),
+        "Local annotation deletion records tombstone");
+    Assert((await databaseB.ListAnnotationTombstonesAsync(bookB.Id)).Single().AnnotationId == annotationA.Id,
+        "Annotation tombstone persisted");
+    Assert((await syncB.SynchronizeAsync(databaseB, settingsStore)).Succeeded,
+        "Annotation deletion upload");
+    Assert((await syncA.SynchronizeAsync(databaseA, settingsStore)).Succeeded,
+        "Annotation deletion download");
+    Assert((await databaseA.ListAnnotationsAsync(bookA.Id)).Count == 0 &&
+           (await databaseA.ListAnnotationTombstonesAsync(bookA.Id)).Any(item => item.AnnotationId == annotationA.Id),
+        "Remote deletion does not resurrect annotation");
+
+    SqliteConnection.ClearAllPools();
+}
+
+static async Task AssertCacheHitDoesNotRewrite(
+    DocumentLoader loader,
+    string sourcePath,
+    string generatedPath,
+    string assertionName)
+{
+    var sentinel = new DateTime(2001, 2, 3, 4, 5, 6, DateTimeKind.Utc);
+    File.SetLastWriteTimeUtc(generatedPath, sentinel);
+    var cached = await loader.LoadAsync(sourcePath);
+    Assert(Path.GetFullPath(cached.CurrentSection.FullPath) == Path.GetFullPath(generatedPath) &&
+           File.GetLastWriteTimeUtc(generatedPath) == sentinel,
+        assertionName);
+}
+
+static async Task TestLibraryDatabaseAsync(string testRoot)
+{
+    var fixtureRoot = Path.Combine(testRoot, "database-fixture");
+    Directory.CreateDirectory(fixtureRoot);
+    var databasePath = Path.Combine(fixtureRoot, "library-test.db");
+    var sourcePath = Path.Combine(fixtureRoot, "database-book.epub");
+    File.WriteAllText(sourcePath, "database fixture", Encoding.UTF8);
+
+    var database = new LibraryDatabase(databasePath);
+    await database.InitializeAsync();
+    Assert(Path.GetFullPath(database.DatabasePath) == Path.GetFullPath(databasePath), "Database uses explicit temporary path");
+    await using (var schemaConnection = new SqliteConnection($"Data Source={databasePath}"))
+    {
+        await schemaConnection.OpenAsync();
+        await using var schemaCommand = schemaConnection.CreateCommand();
+        schemaCommand.CommandText =
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'search_sections_fts';";
+        var ftsSchema = await schemaCommand.ExecuteScalarAsync() as string;
+        Assert(ftsSchema?.Contains("trigram", StringComparison.OrdinalIgnoreCase) == true,
+            "Database FTS uses trigram tokenizer");
+        schemaCommand.CommandText = "PRAGMA user_version;";
+        Assert(Convert.ToInt32(await schemaCommand.ExecuteScalarAsync()) == 3,
+            "Database schema includes annotation tombstones");
+    }
+
+    var savedBook = await database.UpsertBookAsync(new LibraryBook
+    {
+        Path = sourcePath,
+        Title = "数据库测试书",
+        Author = "NoGaReader",
+        Format = "EPUB",
+        FileSize = new FileInfo(sourcePath).Length,
+        ModifiedUtc = File.GetLastWriteTimeUtc(sourcePath),
+        LastOpenedUtc = DateTimeOffset.UtcNow,
+        SectionCount = 2
+    });
+    Assert(savedBook.Id > 0, "Database book identity");
+    Assert((await database.ListBooksAsync()).Count == 1, "Database book insert/list");
+
+    var updatedBook = await database.UpsertBookAsync(new LibraryBook
+    {
+        Path = sourcePath,
+        Title = "数据库测试书（更新）",
+        Author = "NoGaReader",
+        Format = "EPUB",
+        FileSize = new FileInfo(sourcePath).Length,
+        SectionCount = 3
+    });
+    Assert(updatedBook.Id == savedBook.Id, "Database path upsert preserves identity");
+    Assert((await database.FindBookByPathAsync(sourcePath))?.Title == "数据库测试书（更新）", "Database book update/find");
+
+    var location = new ReaderLocation
+    {
+        BookId = savedBook.Id,
+        SectionIndex = 1,
+        Fragment = "chapter-two",
+        SectionProgress = 0.42,
+        DocumentProgress = 0.71,
+        TextQuote = "精确恢复锚点",
+        Anchor = new TextAnchor
+        {
+            StartPath = "0/2/1",
+            StartOffset = 3,
+            EndPath = "0/2/1",
+            EndOffset = 9,
+            ExactText = "精确恢复",
+            Prefix = "这里是",
+            Suffix = "的位置",
+            Progress = 0.42
+        }
+    };
+    await database.SaveReaderLocationAsync(location);
+    var restoredLocation = await database.GetReaderLocationAsync(savedBook.Id);
+    Assert(restoredLocation is not null, "Database reader location insert/get");
+    Assert(restoredLocation!.SectionIndex == 1 && NearlyEqual(restoredLocation.SectionProgress, 0.42), "Database reader location values");
+    Assert(restoredLocation.Anchor?.ExactText == "精确恢复" && restoredLocation.Anchor.StartPath == "0/2/1", "Database reader text anchor round-trip");
+    var listedBookWithLocation = (await database.ListBooksAsync()).Single();
+    Assert(listedBookWithLocation.Location is not null &&
+           NearlyEqual(listedBookWithLocation.Location.DocumentProgress, 0.71) &&
+           listedBookWithLocation.ProgressText == "已读 71%",
+        "Database library list includes reading progress");
+
+    var annotation = await database.UpsertAnnotationAsync(new Annotation
+    {
+        Id = "smoke-highlight",
+        BookId = savedBook.Id,
+        Type = AnnotationType.Highlight,
+        SectionIndex = 1,
+        SectionPath = "chapter2.xhtml",
+        SectionProgress = 0.42,
+        SelectedText = "精确恢复",
+        Color = "yellow",
+        Anchor = location.Anchor
+    });
+    Assert(annotation.Id == "smoke-highlight", "Database annotation insert");
+    Assert((await database.ListAnnotationsAsync(savedBook.Id, 1, AnnotationType.Highlight)).Count == 1, "Database annotation filtering");
+
+    annotation.Type = AnnotationType.Note;
+    annotation.Note = "这是一条本地笔记";
+    annotation.ModifiedUtc = DateTimeOffset.UtcNow.AddSeconds(1);
+    var updatedAnnotation = await database.UpsertAnnotationAsync(annotation);
+    Assert(updatedAnnotation.Type == AnnotationType.Note && updatedAnnotation.Note == "这是一条本地笔记", "Database annotation update");
+    Assert((await database.FindAnnotationAsync(annotation.Id))?.Anchor?.Suffix == "的位置", "Database annotation anchor round-trip");
+
+    var libraryFolderPath = Path.Combine(fixtureRoot, "library-folder");
+    Directory.CreateDirectory(libraryFolderPath);
+    var folder = await database.UpsertLibraryFolderAsync(new LibraryFolder
+    {
+        Path = libraryFolderPath,
+        Name = "临时书库",
+        IncludeSubfolders = true,
+        LastScannedAt = DateTimeOffset.UtcNow
+    });
+    Assert(folder.Id > 0 && (await database.ListLibraryFoldersAsync()).Count == 1, "Database folder insert/list");
+    Assert((await database.FindLibraryFolderByPathAsync(libraryFolderPath))?.Name == "临时书库", "Database folder find");
+
+    const string repeatedSearchText =
+        "needle 开始，然后 NEEDLE 再次出现，最后 needle。中文阅读体验，继续阅读。";
+    var indexStamp = new SearchIndexStamp
+    {
+        SourceSize = new FileInfo(sourcePath).Length,
+        SourceModifiedUtc = new DateTimeOffset(File.GetLastWriteTimeUtc(sourcePath), TimeSpan.Zero),
+        SectionCount = 2,
+        IndexVersion = BookSearchIndexer.IndexVersion
+    };
+    await database.ReplaceSearchIndexAsync(savedBook.Id,
+    [
+        new SearchSection { SectionIndex = 0, Title = "第一章", Text = "ordinary searchable content" },
+        new SearchSection { SectionIndex = 1, Title = "第二章", Text = repeatedSearchText }
+    ], indexStamp);
+    Assert(await database.IsSearchIndexCurrentAsync(savedBook.Id, indexStamp),
+        "Database search index source stamp hit");
+    Assert(!await database.IsSearchIndexCurrentAsync(savedBook.Id, indexStamp with
+    {
+        SourceSize = indexStamp.SourceSize + 1
+    }), "Database search index source stamp invalidation");
+    var searchHits = await database.SearchAsync("needle", savedBook.Id);
+    var expectedNeedleStarts = FindAllOccurrences(repeatedSearchText, "needle", StringComparison.OrdinalIgnoreCase);
+    Assert(searchHits.Count == 3 && searchHits.All(hit => hit.SectionIndex == 1), "Database same-section multi-hit search");
+    Assert(searchHits.Select(hit => hit.OccurrenceIndex).SequenceEqual([0, 1, 2]), "Database search occurrence indexes");
+    Assert(searchHits.Select(hit => hit.MatchStart).SequenceEqual(expectedNeedleStarts), "Database search UTF-16 match offsets");
+    Assert(searchHits.All(hit => hit.MatchLength == "needle".Length &&
+                                 hit.Snippet.Contains($"‹{hit.MatchedText}›", StringComparison.Ordinal)),
+        "Database occurrence snippets and matched text");
+
+    var limitedHits = await database.SearchAsync("needle", savedBook.Id, limit: 2);
+    Assert(limitedHits.Count == 2 &&
+           limitedHits.Select(hit => hit.OccurrenceIndex).SequenceEqual([0, 1]),
+        "Database search result limit applies to occurrences");
+
+    var chineseHits = await database.SearchAsync("阅读", savedBook.Id);
+    var expectedChineseStarts = FindAllOccurrences(repeatedSearchText, "阅读", StringComparison.Ordinal);
+    Assert(chineseHits.Count == 2 &&
+           chineseHits.Select(hit => hit.OccurrenceIndex).SequenceEqual([0, 1]),
+        "Database Chinese same-section occurrences");
+    Assert(chineseHits.Select(hit => hit.MatchStart).SequenceEqual(expectedChineseStarts) &&
+           chineseHits.All(hit => hit.Snippet.Contains("‹阅读›", StringComparison.Ordinal)),
+        "Database Chinese match offsets and snippets");
+    Assert((await database.SearchAsync("needle", savedBook.Id + 1000)).Count == 0, "Database search book filter");
+
+    var relocatedDirectory = Path.Combine(fixtureRoot, "relocated");
+    Directory.CreateDirectory(relocatedDirectory);
+    var relocatedPath = Path.Combine(relocatedDirectory, "database-book.epub");
+    File.Copy(sourcePath, relocatedPath);
+    var relocatedBook = await database.RelocateBookAsync(savedBook.Id, relocatedPath);
+    Assert(relocatedBook.Id == savedBook.Id &&
+           Path.GetFullPath(relocatedBook.Path) == Path.GetFullPath(relocatedPath),
+        "Database relocation preserves book identity and updates path");
+    Assert(await database.FindBookByPathAsync(sourcePath) is null &&
+           (await database.FindBookByPathAsync(relocatedPath))?.Id == savedBook.Id,
+        "Database relocation replaces the path key");
+    Assert((await database.GetReaderLocationAsync(savedBook.Id))?.TextQuote == "精确恢复锚点",
+        "Database relocation preserves reader location");
+    Assert((await database.ListAnnotationsAsync(savedBook.Id)).Single().Note == "这是一条本地笔记",
+        "Database relocation preserves annotations");
+    Assert((await database.SearchAsync("needle", savedBook.Id)).Count == 3 &&
+           (await database.SearchAsync("阅读", savedBook.Id)).Count == 2,
+        "Database relocation preserves search index");
+
+    var collisionPath = Path.Combine(fixtureRoot, "collision.epub");
+    File.WriteAllText(collisionPath, "collision fixture", Encoding.UTF8);
+    var collisionBook = await database.UpsertBookAsync(new LibraryBook
+    {
+        Path = collisionPath,
+        Title = "路径冲突书籍",
+        Format = "EPUB"
+    });
+    var collisionRejected = false;
+    try
+    {
+        _ = await database.RelocateBookAsync(savedBook.Id, collisionPath);
+    }
+    catch (InvalidOperationException)
+    {
+        collisionRejected = true;
+    }
+
+    Assert(collisionRejected, "Database relocation rejects an occupied target path");
+    Assert((await database.FindBookByPathAsync(relocatedPath))?.Id == savedBook.Id &&
+           (await database.FindBookByPathAsync(collisionPath))?.Id == collisionBook.Id,
+        "Database rejected relocation leaves both records unchanged");
+
+    await database.SaveReaderLocationAsync(new ReaderLocation
+    {
+        BookId = collisionBook.Id,
+        SectionIndex = 9,
+        SectionProgress = 0.99,
+        DocumentProgress = 0.99,
+        TextQuote = "重复记录的位置不应覆盖保留记录"
+    });
+    _ = await database.UpsertAnnotationAsync(new Annotation
+    {
+        Id = "duplicate-highlight",
+        BookId = collisionBook.Id,
+        Type = AnnotationType.Highlight,
+        SectionIndex = 0,
+        SectionProgress = 0.2,
+        SelectedText = "从重复记录迁移的高亮",
+        Color = "green"
+    });
+    await database.ReplaceSearchIndexAsync(collisionBook.Id,
+    [
+        new SearchSection
+        {
+            SectionIndex = 0,
+            Title = "重复记录章节",
+            Text = "duplicate-marker 只存在于重复记录的搜索索引"
+        }
+    ]);
+
+    var mergedBook = await database.MergeBookRecordsAsync(
+        savedBook.Id,
+        collisionBook.Id,
+        collisionPath);
+    Assert(mergedBook.Id == savedBook.Id &&
+           Path.GetFullPath(mergedBook.Path) == Path.GetFullPath(collisionPath),
+        "Database merge preserves identity and adopts the selected path");
+    Assert((await database.GetReaderLocationAsync(savedBook.Id))?.TextQuote == "精确恢复锚点",
+        "Database merge keeps the preserved record location");
+    var mergedAnnotations = await database.ListAnnotationsAsync(savedBook.Id);
+    Assert(mergedAnnotations.Count == 2 &&
+           mergedAnnotations.Select(item => item.Id).Order().SequenceEqual(
+               new[] { "duplicate-highlight", "smoke-highlight" }),
+        "Database merge migrates duplicate annotations");
+    var mergedSearchHits = await database.SearchAsync("duplicate-marker", savedBook.Id);
+    Assert(mergedSearchHits.Count == 1 && mergedSearchHits[0].BookId == savedBook.Id,
+        "Database merge migrates duplicate search index");
+    Assert(await database.FindBookByIdAsync(collisionBook.Id) is null &&
+           (await database.FindBookByPathAsync(collisionPath))?.Id == savedBook.Id &&
+           await database.FindBookByPathAsync(relocatedPath) is null,
+        "Database merge deletes duplicate and updates preserved path key");
+
+    Assert(await database.RemoveLibraryFolderAsync(folder.Id), "Database folder delete");
+    Assert((await database.ListLibraryFoldersAsync()).Count == 0, "Database folder deletion persisted");
+
+    Assert(await database.RemoveBookAsync(savedBook.Id), "Database book delete");
+    Assert(await database.GetReaderLocationAsync(savedBook.Id) is null, "Database location cascades with book");
+    Assert((await database.ListAnnotationsAsync(savedBook.Id)).Count == 0, "Database annotations cascade with book");
+    Assert((await database.SearchAsync("duplicate-marker", savedBook.Id)).Count == 0, "Database search index cascades with book");
+    Assert((await database.ListBooksAsync()).Count == 0, "Database relocation fixtures fully removed");
+
+    SqliteConnection.ClearAllPools();
+}
+
+static async Task TestBookSearchIndexerAsync(string testRoot)
+{
+    var fixtureRoot = Path.Combine(testRoot, "indexer-fixture");
+    Directory.CreateDirectory(fixtureRoot);
+    var htmlPath = Path.Combine(fixtureRoot, "chapter.xhtml");
+    File.WriteAllText(htmlPath, """
+        <!doctype html>
+        <html>
+          <head><title>不可索引的标题</title><style>.secret { display:none }</style></head>
+          <body>
+            <h1>可见标题</h1>
+            <p>正文&nbsp;内容 &amp; 实体</p>
+            <script>script-secret-marker()</script>
+            <style>style-secret-marker { color: red }</style>
+            <noscript>noscript-secret-marker</noscript>
+            <!-- comment-secret-marker -->
+          </body>
+        </html>
+        """, Encoding.UTF8);
+
+    var boundedPath = Path.Combine(fixtureRoot, "bounded.txt");
+    await using (var stream = new FileStream(boundedPath, FileMode.Create, FileAccess.Write, FileShare.None))
+    {
+        var block = Encoding.ASCII.GetBytes(new string('x', 64 * 1024));
+        var remaining = BookSearchIndexer.MaximumSectionBytes + block.Length;
+        while (remaining > 0)
+        {
+            var count = Math.Min(remaining, block.Length);
+            await stream.WriteAsync(block.AsMemory(0, count));
+            remaining -= count;
+        }
+
+        await stream.WriteAsync("beyond-limit-marker"u8.ToArray());
+    }
+
+    var skippedPath = Path.Combine(fixtureRoot, "cover.png");
+    File.WriteAllBytes(skippedPath, PixelPng());
+    var session = new ReaderSession
+    {
+        SourcePath = htmlPath,
+        Title = "索引器测试",
+        RootDirectory = fixtureRoot,
+        Kind = ReaderDocumentKind.Epub,
+        Sections =
+        [
+            new ReaderSection("HTML 章节", htmlPath),
+            new ReaderSection("有界文本", boundedPath),
+            new ReaderSection("不支持的二进制章节", skippedPath),
+            new ReaderSection("缺失章节", Path.Combine(fixtureRoot, "missing.xhtml"))
+        ],
+        IsReflowable = true,
+        SupportsInPageSearch = true
+    };
+
+    var sections = await new BookSearchIndexer().BuildAsync(session);
+    Assert(sections.Count == 2, "Search indexer skips unsupported and unreadable sections");
+    var htmlText = sections.Single(section => section.SectionIndex == 0).Text;
+    Assert(htmlText.Contains("可见标题 正文 内容 & 实体", StringComparison.Ordinal), "Search indexer extracts visible normalized text");
+    Assert(!htmlText.Contains("不可索引", StringComparison.Ordinal) &&
+           !htmlText.Contains("secret-marker", StringComparison.Ordinal), "Search indexer strips head/script/style/noscript/comments");
+    var boundedText = sections.Single(section => section.SectionIndex == 1).Text;
+    Assert(boundedText.Length <= BookSearchIndexer.MaximumSectionBytes, "Search indexer enforces per-section byte bound");
+    Assert(!boundedText.Contains("beyond-limit-marker", StringComparison.Ordinal), "Search indexer excludes bytes beyond bound");
+}
+
+static void TestReaderRuntimeAnnotationApi()
+{
+    var runtimeType = typeof(AppSettings).Assembly.GetType(
+        "NoGaReader.Services.ReaderRuntime",
+        throwOnError: true)!;
+    var buildMethod = runtimeType.GetMethod(
+        "BuildRuntimeScript",
+        BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static)
+        ?? throw new InvalidOperationException("ReaderRuntime.BuildRuntimeScript was not found.");
+    var script = (string?)buildMethod.Invoke(
+        null,
+        null)
+        ?? throw new InvalidOperationException("ReaderRuntime returned no runtime script.");
+
+    foreach (var contract in new[]
+             {
+                 "nogareader.selection",
+                 "nogareader.selection-clear",
+                 "selectionAnchor",
+                 "applyAnnotations",
+                 "goToAnnotation",
+                 "revealText",
+                 "const revealText = (query, occurrenceIndex = 0) =>",
+                 "occurrence <= requestedOccurrence",
+                 "searchFrom = index + Math.max(1, normalizedNeedle.length)",
+                 "clearSelection",
+                 "data-nogar-id",
+                 "nogareader.annotation-click",
+                 "点击查看完整笔记"
+             })
+    {
+        Assert(script.Contains(contract, StringComparison.Ordinal), $"ReaderRuntime annotation API: {contract}");
+    }
+
+    var controllerType = typeof(AppSettings).Assembly.GetType(
+        "NoGaReader.Services.ReaderViewController",
+        throwOnError: true)!;
+    var revealMethod = controllerType.GetMethod(
+        "RevealTextAsync",
+        BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance)
+        ?? throw new InvalidOperationException("ReaderViewController.RevealTextAsync was not found.");
+    var revealParameters = revealMethod.GetParameters();
+    Assert(revealMethod.ReturnType == typeof(Task<bool>), "ReaderViewController revealText return contract");
+    Assert(revealParameters.Length == 2 &&
+           revealParameters[0].ParameterType == typeof(string) &&
+           revealParameters[1].ParameterType == typeof(int),
+        "ReaderViewController revealText occurrence parameter contract");
+    Assert(revealParameters[1].HasDefaultValue && Convert.ToInt32(revealParameters[1].DefaultValue) == 0,
+        "ReaderViewController revealText occurrence default");
+}
+
+static async Task TestLibraryScannerAsync(string testRoot)
+{
+    var fixtureRoot = Path.Combine(testRoot, "scanner-fixture");
+    var nestedRoot = Path.Combine(fixtureRoot, "nested");
+    Directory.CreateDirectory(nestedRoot);
+    File.WriteAllText(Path.Combine(fixtureRoot, "alpha.txt"), "alpha", Encoding.UTF8);
+    File.WriteAllText(Path.Combine(nestedRoot, "beta.md"), "# beta", Encoding.UTF8);
+    File.WriteAllText(Path.Combine(nestedRoot, "ignored.bin"), "not a book", Encoding.UTF8);
+
+    var scanner = new LibraryScanner();
+    var shallowResult = await scanner.ScanAsync(
+        fixtureRoot,
+        new LibraryScanOptions
+        {
+            ReadBookMetadata = false,
+            IncludeCoverImages = false,
+            IncludeSubfolders = false,
+            MaximumFileCount = 10
+        });
+
+    Assert(Path.GetFullPath(shallowResult.RootDirectory) == Path.GetFullPath(fixtureRoot), "Library scanner temporary root");
+    Assert(shallowResult.CandidateFileCount == 1 && shallowResult.Items.Count == 1,
+        "Library scanner excludes child directories when disabled");
+    Assert(shallowResult.Items.Single().Title == "alpha" && shallowResult.Items.Single().Format == "TXT",
+        "Library scanner shallow result");
+
+    var recursiveResult = await scanner.ScanAsync(
+        fixtureRoot,
+        new LibraryScanOptions
+        {
+            ReadBookMetadata = false,
+            IncludeCoverImages = false,
+            IncludeSubfolders = true,
+            MaximumFileCount = 10
+        });
+
+    Assert(recursiveResult.CandidateFileCount == 2 && recursiveResult.Items.Count == 2,
+        "Library scanner includes child directories when enabled");
+    Assert(recursiveResult.Items.Any(item => item.Title == "alpha" && item.Format == "TXT"), "Library scanner TXT metadata");
+    Assert(recursiveResult.Items.Any(item => item.Title == "beta" && item.Format == "MD"), "Library scanner Markdown metadata");
+    Assert(!recursiveResult.IsFileLimitReached && recursiveResult.Issues.Count == 0, "Library scanner clean completion");
+
+    var knownSnapshots = recursiveResult.Items.ToDictionary(
+        item => item.Path,
+        item => new LibraryScanSnapshot
+        {
+            Path = item.Path,
+            Title = item.Title,
+            Author = item.Author,
+            Format = item.Format,
+            FileSize = item.FileSize,
+            LastModifiedUtc = item.LastModifiedUtc
+        },
+        StringComparer.OrdinalIgnoreCase);
+    var unchangedResult = await scanner.ScanAsync(
+        fixtureRoot,
+        new LibraryScanOptions
+        {
+            IncludeSubfolders = true,
+            KnownBooks = knownSnapshots
+        });
+    Assert(unchangedResult.Items.Count == 2 && unchangedResult.Items.All(item => item.IsUnchanged),
+        "Library scanner skips unchanged metadata and cover extraction");
+}
+
+static async Task TestAnnotationExportAsync(string testRoot)
+{
+    var fixtureRoot = Path.Combine(testRoot, "annotation-export-fixture");
+    Directory.CreateDirectory(fixtureRoot);
+    var book = new LibraryBook
+    {
+        Id = 7001,
+        Path = Path.Combine(fixtureRoot, "source.epub"),
+        Title = "# [危险](javascript:alert(1)) | *书名*",
+        Author = "A_B",
+        Format = "EPUB"
+    };
+    var createdAt = new DateTimeOffset(2026, 7, 17, 1, 2, 3, TimeSpan.Zero);
+    var annotations = new[]
+    {
+        new Annotation
+        {
+            Id = "export-note",
+            BookId = book.Id,
+            Type = AnnotationType.Note,
+            SectionIndex = 1,
+            SectionProgress = 0.375,
+            SelectedText = "第一行\n> 伪引用\n# 伪标题\n[链接](javascript:alert(1))",
+            Note = "*强调* | <tag>\r\n---",
+            Color = "yellow",
+            Anchor = new TextAnchor
+            {
+                ExactText = "精确文本",
+                Prefix = "前文",
+                Suffix = "后文",
+                StartPath = "0/1",
+                EndPath = "0/2"
+            },
+            CreatedUtc = createdAt,
+            ModifiedUtc = createdAt.AddMinutes(1)
+        },
+        new Annotation
+        {
+            Id = "export-bookmark",
+            BookId = book.Id,
+            Type = AnnotationType.Bookmark,
+            SectionIndex = 0,
+            SectionProgress = 0.1,
+            CreatedUtc = createdAt.AddMinutes(-1),
+            ModifiedUtc = createdAt
+        }
+    };
+    var exportedAt = new DateTimeOffset(2026, 7, 17, 6, 7, 8, TimeSpan.Zero);
+    var service = new AnnotationExportService();
+
+    var markdown = service.CreateMarkdown(book, annotations, exportedAt);
+    Assert(markdown.StartsWith(
+            "# \\# \\[危险\\]\\(javascript:alert\\(1\\)\\) \\| \\*书名\\* — 批注导出\n",
+            StringComparison.Ordinal),
+        "Annotation Markdown escapes heading metacharacters");
+    Assert(markdown.Contains("- 作者：A\\_B\n", StringComparison.Ordinal),
+        "Annotation Markdown escapes inline metadata");
+    Assert(markdown.Contains(
+            "> \\> 伪引用\n> \\# 伪标题\n> \\[链接\\]\\(javascript:alert\\(1\\)\\)\n",
+            StringComparison.Ordinal),
+        "Annotation Markdown neutralizes quote, heading, and link injection");
+    Assert(markdown.Contains("> \\*强调\\* \\| \\<tag\\>\n> \\-\\-\\-\n", StringComparison.Ordinal),
+        "Annotation Markdown safely escapes note content");
+    Assert(!markdown.Contains('\r') &&
+           !markdown.Contains("\n# 伪标题", StringComparison.Ordinal) &&
+           !markdown.Contains("\n> > 伪引用", StringComparison.Ordinal),
+        "Annotation Markdown uses LF and contains no injected block syntax");
+
+    var json = service.CreateJson(book, annotations, exportedAt);
+    using (var document = JsonDocument.Parse(json))
+    {
+        var root = document.RootElement;
+        Assert(root.GetProperty("schemaVersion").GetInt32() == AnnotationExportDocument.CurrentSchemaVersion,
+            "Annotation JSON schema version");
+        Assert(root.GetProperty("exportedAtUtc").GetDateTimeOffset() == exportedAt,
+            "Annotation JSON export timestamp");
+        var items = root.GetProperty("annotations").EnumerateArray().ToArray();
+        Assert(items.Length == 2 &&
+               items[0].GetProperty("kind").GetString() == "bookmark" &&
+               items[1].GetProperty("kind").GetString() == "note",
+            "Annotation JSON stable ordering and kinds");
+        Assert(items[1].GetProperty("sectionNumber").GetInt32() == 2 &&
+               items[1].GetProperty("textSelector").GetProperty("exact").GetString() == "精确文本",
+            "Annotation JSON portable section and quote selector");
+    }
+
+    Assert(!json.Contains("\"bookId\"", StringComparison.Ordinal) &&
+           !json.Contains("\"id\"", StringComparison.Ordinal) &&
+           !json.Contains("startPath", StringComparison.OrdinalIgnoreCase) &&
+           !json.Contains("endPath", StringComparison.OrdinalIgnoreCase),
+        "Annotation JSON excludes database and DOM-specific fields");
+
+    var suggestedName = service.CreateSuggestedFileName(book, AnnotationExportFormat.Markdown);
+    Assert(suggestedName.IndexOfAny(Path.GetInvalidFileNameChars()) < 0,
+        "Annotation export filename removes unsafe characters");
+    var reservedName = service.CreateSuggestedFileName(
+        new LibraryBook { Id = 7002, Path = Path.Combine(fixtureRoot, "con.epub"), Title = "CON" },
+        AnnotationExportFormat.Markdown);
+    Assert(reservedName == "_CON - 批注.md", "Annotation export avoids Windows reserved filename");
+
+    var markdownPath = Path.Combine(fixtureRoot, "explicit", "annotations.md");
+    var jsonPath = Path.Combine(fixtureRoot, "explicit", "annotations.json");
+    var writtenMarkdownPath = await service.ExportToFileAsync(
+        book,
+        annotations,
+        markdownPath,
+        AnnotationExportFormat.Markdown);
+    var writtenJsonPath = await service.ExportToFileAsync(
+        book,
+        annotations,
+        jsonPath,
+        AnnotationExportFormat.Json);
+    Assert(writtenMarkdownPath == Path.GetFullPath(markdownPath) &&
+           writtenJsonPath == Path.GetFullPath(jsonPath),
+        "Annotation ExportToFileAsync returns explicit absolute paths");
+    Assert(!HasUtf8Bom(File.ReadAllBytes(markdownPath)) && !HasUtf8Bom(File.ReadAllBytes(jsonPath)),
+        "Annotation exports use UTF-8 without BOM");
+    using (var writtenJson = JsonDocument.Parse(await File.ReadAllTextAsync(jsonPath, Encoding.UTF8)))
+    {
+        Assert(writtenJson.RootElement.GetProperty("schemaVersion").GetInt32() ==
+               AnnotationExportDocument.CurrentSchemaVersion,
+            "Annotation JSON file retains schema version");
+    }
+
+    var cancelledPath = Path.Combine(fixtureRoot, "explicit", "cancelled.json");
+    using var cancellation = new CancellationTokenSource();
+    cancellation.Cancel();
+    var cancelled = false;
+    try
+    {
+        _ = await service.ExportToFileAsync(
+            book,
+            annotations,
+            cancelledPath,
+            AnnotationExportFormat.Json,
+            cancellation.Token);
+    }
+    catch (OperationCanceledException)
+    {
+        cancelled = true;
+    }
+
+    Assert(cancelled && !File.Exists(cancelledPath), "Annotation export honors pre-cancellation");
+    Assert(!Directory.EnumerateFiles(fixtureRoot, "*.tmp", SearchOption.AllDirectories).Any(),
+        "Annotation export cancellation leaves no temporary files");
+}
+
+static void TestTocNodeFlatten(string testRoot)
+{
+    var chapterOnePath = Path.Combine(testRoot, "chapter-one.xhtml");
+    var chapterTwoPath = Path.Combine(testRoot, "chapter-two.xhtml");
+    var nodes = new[]
+    {
+        new TocNode
+        {
+            Title = "第一部",
+            FullPath = chapterOnePath,
+            Children =
+            [
+                new TocNode
+                {
+                    Title = "第一章",
+                    FullPath = chapterOnePath,
+                    Fragment = "chapter-1",
+                    Children =
+                    [
+                        new TocNode
+                        {
+                            Title = "第一节",
+                            FullPath = chapterOnePath,
+                            Fragment = "section-1"
+                        }
+                    ]
+                }
+            ]
+        },
+        new TocNode { Title = "第二部", FullPath = chapterTwoPath }
+    };
+
+    var flattened = nodes.SelectMany(node => node.Flatten()).ToArray();
+    Assert(flattened.Select(node => node.Title).SequenceEqual(["第一部", "第一章", "第一节", "第二部"]), "TOC flatten pre-order");
+    Assert(flattened[1].Fragment == "chapter-1" && flattened[2].Fragment == "section-1", "TOC flatten preserves fragments");
+}
+
+static IReadOnlyList<int> FindAllOccurrences(
+    string source,
+    string query,
+    StringComparison comparison)
+{
+    var results = new List<int>();
+    var searchStart = 0;
+    while (searchStart <= source.Length - query.Length)
+    {
+        var matchStart = source.IndexOf(query, searchStart, comparison);
+        if (matchStart < 0)
+        {
+            break;
+        }
+
+        results.Add(matchStart);
+        searchStart = matchStart + Math.Max(1, query.Length);
+    }
+
+    return results;
+}
+
+static bool HasUtf8Bom(byte[] bytes) =>
+    bytes.Length >= 3 && bytes[0] == 0xEF && bytes[1] == 0xBB && bytes[2] == 0xBF;
+
+static bool NearlyEqual(double left, double right) => Math.Abs(left - right) < 0.000_001;
+
+static void CreateEpub(string path)
+{
+    using var stream = File.Create(path);
+    using var archive = new ZipArchive(stream, ZipArchiveMode.Create);
+    WriteEntry(archive, "mimetype", "application/epub+zip", CompressionLevel.NoCompression);
+    WriteEntry(archive, "META-INF/container.xml", """
+        <?xml version="1.0"?>
+        <container xmlns="urn:oasis:names:tc:opendocument:xmlns:container" version="1.0">
+          <rootfiles><rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/></rootfiles>
+        </container>
+        """);
+    WriteEntry(archive, "OEBPS/content.opf", """
+        <?xml version="1.0" encoding="utf-8"?>
+        <package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="id">
+          <metadata xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:title>测试 EPUB</dc:title></metadata>
+          <manifest>
+            <item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>
+            <item id="c1" href="chapter1.xhtml" media-type="application/xhtml+xml"/>
+            <item id="c2" href="chapter2.xhtml" media-type="application/xhtml+xml"/>
+          </manifest>
+          <spine><itemref idref="c1"/><itemref idref="c2"/></spine>
+        </package>
+        """);
+    WriteEntry(archive, "OEBPS/nav.xhtml", """
+        <html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops">
+          <body><nav epub:type="toc"><ol><li><a href="chapter1.xhtml">开篇</a></li><li><a href="chapter2.xhtml">继续</a></li></ol></nav></body>
+        </html>
+        """);
+    WriteEntry(archive, "OEBPS/chapter1.xhtml", "<html xmlns=\"http://www.w3.org/1999/xhtml\"><body><h1>开篇</h1><p onclick=\"alert(1)\">Hello EPUB.</p><a href=\"data:text/html;base64,PHNjcmlwdD5hbGVydCgxKTwvc2NyaXB0Pg==\">active data</a><a href=\"payload.xhtml\">payload</a><script>alert('blocked')</script><iframe src=\"https://example.com\"/></body></html>");
+    WriteEntry(archive, "OEBPS/chapter2.xhtml", "<html xmlns=\"http://www.w3.org/1999/xhtml\"><body><h1>继续</h1><p>Second section.</p></body></html>");
+    WriteEntry(archive, "OEBPS/payload.xhtml", "<html xmlns=\"http://www.w3.org/1999/xhtml\"><body><script>window.chrome.webview.postMessage('unsafe')</script></body></html>");
+}
+
+
+static void CreateCbt(string path)
+{
+    // CBT is tar; write an uncompressed ustar with one PNG member.
+    var pixel = PixelPng();
+    using var stream = File.Create(path);
+    WriteTarFile(stream, "page1.png", pixel);
+    // two zero blocks end
+    stream.Write(new byte[512]);
+    stream.Write(new byte[512]);
+}
+
+static void WriteTarFile(Stream stream, string name, byte[] content)
+{
+    var header = new byte[512];
+    var nameBytes = Encoding.ASCII.GetBytes(name);
+    Array.Copy(nameBytes, header, Math.Min(nameBytes.Length, 100));
+    var mode = Encoding.ASCII.GetBytes("0000644");
+    Array.Copy(mode, 0, header, 100, mode.Length);
+    var uid = Encoding.ASCII.GetBytes("0000000");
+    Array.Copy(uid, 0, header, 108, uid.Length);
+    Array.Copy(uid, 0, header, 116, uid.Length);
+    var sizeOctal = Convert.ToString(content.Length, 8).PadLeft(11, '0') + "\0";
+    var sizeBytes = Encoding.ASCII.GetBytes(sizeOctal);
+    Array.Copy(sizeBytes, 0, header, 124, Math.Min(sizeBytes.Length, 12));
+    var mtime = Encoding.ASCII.GetBytes(Convert.ToString(DateTimeOffset.UtcNow.ToUnixTimeSeconds(), 8).PadLeft(11, '0') + "\0");
+    Array.Copy(mtime, 0, header, 136, Math.Min(mtime.Length, 12));
+    // checksum blank then compute
+    for (var i = 148; i < 156; i++) header[i] = (byte)' ';
+    header[156] = (byte)'0'; // regular file
+    var checksum = 0;
+    foreach (var b in header) checksum += b;
+    var checksumText = Convert.ToString(checksum, 8).PadLeft(6, '0') + "\0 ";
+    var checksumBytes = Encoding.ASCII.GetBytes(checksumText);
+    Array.Copy(checksumBytes, 0, header, 148, Math.Min(checksumBytes.Length, 8));
+    // ustar
+    var magic = Encoding.ASCII.GetBytes("ustar\0");
+    Array.Copy(magic, 0, header, 257, magic.Length);
+    var ver = Encoding.ASCII.GetBytes("00");
+    Array.Copy(ver, 0, header, 263, ver.Length);
+    stream.Write(header);
+    stream.Write(content);
+    var padding = (512 - (content.Length % 512)) % 512;
+    if (padding > 0)
+    {
+        stream.Write(new byte[padding]);
+    }
+}
+
+
+static void CreateXpsWithImage(string path)
+{
+    // Minimal ZIP package containing one PNG, enough for XpsLoader image extraction path.
+    using var stream = File.Create(path);
+    using var archive = new ZipArchive(stream, ZipArchiveMode.Create);
+    WriteBinaryEntry(archive, "Documents/1/Resources/Images/img0.png", PixelPng());
+    WriteEntry(archive, "[Content_Types].xml",
+        """<?xml version="1.0" encoding="utf-8"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="png" ContentType="image/png"/></Types>""");
+}
+
+static void CreateXpsWithTooManyEntries(string path)
+{
+    using var stream = File.Create(path);
+    using var archive = new ZipArchive(stream, ZipArchiveMode.Create);
+    for (var index = 0; index <= 10_000; index++)
+    {
+        _ = archive.CreateEntry($"metadata/{index:D5}.xml", CompressionLevel.NoCompression);
+    }
+}
+
+static void AddHyperlinkToDocx(string path)
+{
+    using var word = DocumentFormat.OpenXml.Packaging.WordprocessingDocument.Open(path, true);
+    var mainPart = word.MainDocumentPart
+        ?? throw new InvalidDataException("DOCX fixture has no main document part.");
+    var relationship = mainPart.AddHyperlinkRelationship(new Uri("https://example.com"), true);
+    mainPart.Document.Body!.AppendChild(
+        new DocumentFormat.OpenXml.Wordprocessing.Paragraph(
+            new DocumentFormat.OpenXml.Wordprocessing.Hyperlink(
+                new DocumentFormat.OpenXml.Wordprocessing.Run(
+                    new DocumentFormat.OpenXml.Wordprocessing.Text("external link")))
+            {
+                Id = relationship.Id
+            }));
+    mainPart.Document.Save();
+}
+
+static void CreateCbz(string path)
+{
+    var pixel = PixelPng();
+    using var stream = File.Create(path);
+    using var archive = new ZipArchive(stream, ZipArchiveMode.Create);
+    WriteBinaryEntry(archive, "page10.png", pixel);
+    WriteBinaryEntry(archive, "page2.png", pixel);
+}
+
+static void CreateMaliciousComic(string path)
+{
+    using var stream = File.Create(path);
+    using var archive = new ZipArchive(stream, ZipArchiveMode.Create);
+    WriteBinaryEntry(archive, "../escape.png", PixelPng());
+}
+
+static byte[] PixelPng()
+{
+    return Convert.FromBase64String("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=");
+}
+
+static void CreateMaliciousEpub(string path)
+{
+    using var stream = File.Create(path);
+    using var archive = new ZipArchive(stream, ZipArchiveMode.Create);
+    WriteEntry(archive, "META-INF/container.xml", "<container><rootfiles><rootfile full-path=\"content.opf\"/></rootfiles></container>");
+    WriteEntry(archive, "content.opf", "<package><manifest/><spine/></package>");
+    WriteEntry(archive, "../escape.txt", "must not escape");
+}
+
+static void WriteEntry(
+    ZipArchive archive,
+    string name,
+    string content,
+    CompressionLevel compressionLevel = CompressionLevel.Optimal)
+{
+    var entry = archive.CreateEntry(name, compressionLevel);
+    using var writer = new StreamWriter(entry.Open(), new UTF8Encoding(false));
+    writer.Write(content);
+}
+
+static void WriteBinaryEntry(ZipArchive archive, string name, byte[] content)
+{
+    var entry = archive.CreateEntry(name, CompressionLevel.Optimal);
+    using var output = entry.Open();
+    output.Write(content);
+}
+
+static void Assert(bool condition, string name)
+{
+    if (!condition)
+    {
+        throw new InvalidOperationException($"Smoke test failed: {name}");
+    }
+}

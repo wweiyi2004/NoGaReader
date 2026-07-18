@@ -1,0 +1,13 @@
+.vs/
+.idea/
+**/bin/
+**/obj/
+artifacts/
+.local-data/
+.nuget-packages/
+.build-temp/
+.tmp/
+.qa/
+*.user
+*.suo
+*.log

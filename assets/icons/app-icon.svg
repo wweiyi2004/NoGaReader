@@ -1,0 +1,102 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-label="NoGaReader">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#2F6BFF"/>
+      <stop offset="55%" stop-color="#2458E8"/>
+      <stop offset="100%" stop-color="#1D4ED8"/>
+    </linearGradient>
+    <linearGradient id="pageL" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#FFFDF7"/>
+      <stop offset="100%" stop-color="#F7F0DF"/>
+    </linearGradient>
+    <linearGradient id="pageR" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#FFF9EC"/>
+      <stop offset="100%" stop-color="#F3E7C8"/>
+    </linearGradient>
+    <linearGradient id="cover" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#FACC15"/>
+      <stop offset="100%" stop-color="#EAB308"/>
+    </linearGradient>
+    <linearGradient id="spine" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#1E3A8A"/>
+      <stop offset="50%" stop-color="#1D4ED8"/>
+      <stop offset="100%" stop-color="#1E3A8A"/>
+    </linearGradient>
+    <linearGradient id="bubble" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#FFFBEB"/>
+      <stop offset="100%" stop-color="#FEF3C7"/>
+    </linearGradient>
+    <filter id="soft" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="3" stdDeviation="2.2" flood-color="#0F172A" flood-opacity="0.18"/>
+    </filter>
+    <clipPath id="round">
+      <rect width="128" height="128" rx="28"/>
+    </clipPath>
+  </defs>
+
+  <!-- App tile -->
+  <rect width="128" height="128" rx="28" fill="url(#bg)"/>
+  <g clip-path="url(#round)">
+    <circle cx="20" cy="16" r="46" fill="#FDE68A" opacity="0.16"/>
+    <circle cx="116" cy="112" r="52" fill="#0B1E5A" opacity="0.16"/>
+    <circle cx="96" cy="24" r="18" fill="#FFFFFF" opacity="0.08"/>
+  </g>
+
+  <!-- Soft platform -->
+  <ellipse cx="64" cy="100" rx="36" ry="7" fill="#0F172A" opacity="0.16"/>
+
+  <!-- Open book -->
+  <g transform="translate(22,32)" filter="url(#soft)">
+    <!-- left cover rim -->
+    <path d="M10 14 C10 10, 14 8, 18 8 L44 8 L44 60 L18 60 C14 60, 10 58, 10 54 Z" fill="url(#cover)"/>
+    <!-- left page -->
+    <path d="M16 14 C16 12, 18 12, 20 12 L44 12 L44 56 L20 56 C18 56, 16 56, 16 54 Z" fill="url(#pageL)"/>
+    <!-- novel lines -->
+    <rect x="22" y="20" width="16" height="2.5" rx="1.2" fill="#94A3B8"/>
+    <rect x="22" y="26" width="14" height="2.5" rx="1.2" fill="#CBD5E1"/>
+    <rect x="22" y="32" width="16" height="2.5" rx="1.2" fill="#94A3B8"/>
+    <rect x="22" y="38" width="11" height="2.5" rx="1.2" fill="#CBD5E1"/>
+    <rect x="22" y="44" width="13" height="2.5" rx="1.2" fill="#A5B4C8"/>
+
+    <!-- spine -->
+    <rect x="42" y="8" width="8" height="52" rx="2" fill="url(#spine)"/>
+    <rect x="44.5" y="14" width="3" height="40" rx="1.5" fill="#60A5FA" opacity="0.55"/>
+
+    <!-- right cover rim -->
+    <path d="M50 8 L76 8 C80 8, 84 10, 84 14 L84 54 C84 58, 80 60, 76 60 L50 60 Z" fill="url(#cover)"/>
+    <!-- right page -->
+    <path d="M50 12 L74 12 C76 12, 78 12, 78 14 L78 54 C78 56, 76 56, 74 56 L50 56 Z" fill="url(#pageR)"/>
+
+    <!-- manga panels -->
+    <rect x="55" y="18" width="18" height="13" rx="2.5" fill="#EFF6FF" stroke="#3B82F6" stroke-width="1.4"/>
+    <rect x="58" y="21" width="5.5" height="5.5" rx="1.2" fill="#2563EB"/>
+    <rect x="65" y="21" width="5" height="3.5" rx="1" fill="#93C5FD"/>
+    <rect x="58" y="28" width="12" height="1.6" rx="0.8" fill="#BFDBFE"/>
+
+    <rect x="55" y="35" width="18" height="10" rx="2.5" fill="#FFFBEB" stroke="#EAB308" stroke-width="1.3"/>
+    <rect x="58" y="38" width="12" height="1.8" rx="0.9" fill="#CA8A04"/>
+    <rect x="58" y="41.5" width="8" height="1.8" rx="0.9" fill="#F59E0B" opacity="0.75"/>
+
+    <!-- page edge highlights -->
+    <rect x="17" y="14" width="1.8" height="42" rx="0.9" fill="#FFFFFF" opacity="0.55"/>
+    <rect x="76" y="14" width="1.8" height="42" rx="0.9" fill="#FFFFFF" opacity="0.35"/>
+  </g>
+
+  <!-- Manga speech bubble -->
+  <g transform="translate(82,20)" filter="url(#soft)">
+    <rect x="0" y="0" width="30" height="20" rx="8" fill="url(#bubble)" stroke="#F59E0B" stroke-width="1.4"/>
+    <path d="M10 20 L16 20 L8 29 Z" fill="#FEF3C7" stroke="#F59E0B" stroke-width="1.2"/>
+    <rect x="8" y="19.2" width="8" height="2.2" fill="#FEF3C7"/>
+    <circle cx="9" cy="10" r="1.7" fill="#2563EB"/>
+    <circle cx="15" cy="10" r="1.7" fill="#2563EB"/>
+    <circle cx="21" cy="10" r="1.7" fill="#2563EB"/>
+  </g>
+
+  <!-- Soft sparkles -->
+  <g fill="#FDE68A">
+    <circle cx="22" cy="88" r="2.2"/>
+    <circle cx="28" cy="83" r="1.3" opacity="0.85"/>
+    <circle cx="104" cy="86" r="2"/>
+    <circle cx="98" cy="91" r="1.2" opacity="0.8"/>
+  </g>
+</svg>
