@@ -3,14 +3,21 @@ using System.Text;
 using System.Windows;
 using System.Windows.Documents;
 using System.Windows.Media;
+using System.Windows.Media.Imaging;
 using DocumentFormat.OpenXml;
 using DocumentFormat.OpenXml.Packaging;
 using DocumentFormat.OpenXml.Wordprocessing;
+using A = DocumentFormat.OpenXml.Drawing;
+using DW = DocumentFormat.OpenXml.Drawing.Wordprocessing;
+using PIC = DocumentFormat.OpenXml.Drawing.Pictures;
 using WpfParagraph = System.Windows.Documents.Paragraph;
 using WpfRun = System.Windows.Documents.Run;
+using WpfImage = System.Windows.Controls.Image;
+using WpfInlineUIContainer = System.Windows.Documents.InlineUIContainer;
 using OpenXmlParagraph = DocumentFormat.OpenXml.Wordprocessing.Paragraph;
 using OpenXmlRun = DocumentFormat.OpenXml.Wordprocessing.Run;
 using OpenXmlText = DocumentFormat.OpenXml.Wordprocessing.Text;
+using OpenXmlDrawing = DocumentFormat.OpenXml.Wordprocessing.Drawing;
 using OpenXmlBold = DocumentFormat.OpenXml.Wordprocessing.Bold;
 using OpenXmlItalic = DocumentFormat.OpenXml.Wordprocessing.Italic;
 using OpenXmlUnderline = DocumentFormat.OpenXml.Wordprocessing.Underline;
@@ -28,8 +35,9 @@ namespace NoGaReader.Services;
 public static class OfficeDocumentService
 {
     public static readonly string OpenFilter =
-        "文档|*.docx;*.rtf;*.txt;*.html;*.htm|" +
-        "Word 文档|*.docx|" +
+        "文档|*.docx;*.doc;*.odt;*.rtf;*.txt;*.html;*.htm|" +
+        "Word 文档|*.docx;*.doc|" +
+        "OpenDocument|*.odt|" +
         "RTF|*.rtf|" +
         "文本|*.txt|" +
         "HTML|*.html;*.htm|" +
@@ -90,9 +98,9 @@ public static class OfficeDocumentService
             ".txt" => LoadPlainText(path),
             ".html" or ".htm" => LoadHtml(path),
             ".doc" => throw new NotSupportedException(
-                "暂不支持直接编辑旧版 .doc。请先在“转换”中转为 DOCX，或另存为 DOCX。"),
+                "暂不支持直接编辑旧版 .doc。请使用 Microsoft Word 或 LibreOffice 将其另存为 DOCX，再打开编辑。"),
             ".odt" => throw new NotSupportedException(
-                "暂不支持直接编辑 ODT。请先在“转换”中转为 DOCX。"),
+                "暂不支持直接编辑 ODT。请先在主窗口侧栏「转换」中转为 DOCX，再打开编辑。"),
             _ => throw new NotSupportedException($"不支持的文档格式：{extension}")
         };
     }
@@ -102,6 +110,12 @@ public static class OfficeDocumentService
         ArgumentNullException.ThrowIfNull(document);
         ArgumentException.ThrowIfNullOrWhiteSpace(path);
         var extension = NormalizeExtension(Path.GetExtension(path));
+        if (extension == ".txt" && ContainsEmbeddedUiElement(document))
+        {
+            throw new NotSupportedException(
+                "TXT 无法保存图片或其他嵌入对象。请使用“另存为”保存成 DOCX 或 RTF；原文件未被覆盖。");
+        }
+
         var directory = Path.GetDirectoryName(path);
         if (!string.IsNullOrWhiteSpace(directory))
         {
@@ -199,7 +213,9 @@ public static class OfficeDocumentService
     private static FlowDocument LoadDocx(string path)
     {
         using var word = WordprocessingDocument.Open(path, false);
-        var body = word.MainDocumentPart?.Document?.Body
+        var mainPart = word.MainDocumentPart
+            ?? throw new InvalidDataException("DOCX 缺少主文档。");
+        var body = mainPart.Document?.Body
             ?? throw new InvalidDataException("DOCX 缺少正文。");
 
         var document = new FlowDocument
@@ -214,11 +230,11 @@ public static class OfficeDocumentService
         {
             if (element is OpenXmlParagraph paragraph)
             {
-                document.Blocks.Add(ConvertParagraph(paragraph));
+                document.Blocks.Add(ConvertParagraph(paragraph, mainPart));
             }
             else if (element is OpenXmlTable table)
             {
-                document.Blocks.Add(ConvertTable(table));
+                document.Blocks.Add(ConvertTable(table, mainPart));
             }
         }
 
@@ -277,7 +293,9 @@ public static class OfficeDocumentService
         return true;
     }
 
-    private static WpfParagraph ConvertParagraph(OpenXmlParagraph paragraph)
+    private static WpfParagraph ConvertParagraph(
+        OpenXmlParagraph paragraph,
+        MainDocumentPart mainPart)
     {
         var result = new WpfParagraph
         {
@@ -300,43 +318,26 @@ public static class OfficeDocumentService
 
         foreach (var run in paragraph.Elements<OpenXmlRun>())
         {
-            var text = string.Concat(run.Elements<OpenXmlText>().Select(item => item.Text));
-            if (text.Length == 0 && run.Elements<Break>().Any())
+            foreach (var child in run.ChildElements)
             {
-                result.Inlines.Add(new LineBreak());
-                continue;
-            }
+                if (child is OpenXmlText text)
+                {
+                    result.Inlines.Add(ConvertRunText(run, text.Text ?? string.Empty));
+                    continue;
+                }
 
-            if (text.Length == 0)
-            {
-                continue;
-            }
+                if (child is Break)
+                {
+                    result.Inlines.Add(new LineBreak());
+                    continue;
+                }
 
-            var wpfRun = new WpfRun(text);
-            var props = run.RunProperties;
-            if (props?.Bold is not null)
-            {
-                wpfRun.FontWeight = FontWeights.Bold;
+                if (child is OpenXmlDrawing drawing &&
+                    TryConvertImage(drawing, mainPart) is { } image)
+                {
+                    result.Inlines.Add(image);
+                }
             }
-
-            if (props?.Italic is not null)
-            {
-                wpfRun.FontStyle = FontStyles.Italic;
-            }
-
-            if (props?.Underline is not null)
-            {
-                wpfRun.TextDecorations = TextDecorations.Underline;
-            }
-
-            if (props?.FontSize?.Val?.Value is { } sizeValue &&
-                double.TryParse(sizeValue, out var halfPoints) &&
-                halfPoints > 0)
-            {
-                wpfRun.FontSize = halfPoints / 2.0;
-            }
-
-            result.Inlines.Add(wpfRun);
         }
 
         if (!result.Inlines.Any())
@@ -347,33 +348,155 @@ public static class OfficeDocumentService
         return result;
     }
 
-    private static WpfTable ConvertTable(OpenXmlTable table)
+    private static WpfRun ConvertRunText(OpenXmlRun run, string text)
+    {
+        var result = new WpfRun(text);
+        var props = run.RunProperties;
+        if (props?.Bold is not null)
+        {
+            result.FontWeight = FontWeights.Bold;
+        }
+
+        if (props?.Italic is not null)
+        {
+            result.FontStyle = FontStyles.Italic;
+        }
+
+        if (props?.Underline is not null)
+        {
+            result.TextDecorations = TextDecorations.Underline;
+        }
+
+        if (props?.FontSize?.Val?.Value is { } sizeValue &&
+            double.TryParse(sizeValue, out var halfPoints) &&
+            halfPoints > 0)
+        {
+            result.FontSize = halfPoints / 2.0;
+        }
+
+        return result;
+    }
+
+    private static WpfInlineUIContainer? TryConvertImage(
+        OpenXmlDrawing drawing,
+        MainDocumentPart mainPart)
+    {
+        var relationshipId = drawing.Descendants<A.Blip>()
+            .Select(blip => blip.Embed?.Value)
+            .FirstOrDefault(value => !string.IsNullOrWhiteSpace(value));
+        if (string.IsNullOrWhiteSpace(relationshipId))
+        {
+            return null;
+        }
+
+        ImagePart? imagePart;
+        try
+        {
+            imagePart = mainPart.GetPartById(relationshipId) as ImagePart;
+        }
+        catch (Exception exception) when (exception is ArgumentException or KeyNotFoundException)
+        {
+            return null;
+        }
+
+        if (imagePart is null)
+        {
+            return null;
+        }
+
+        BitmapSource bitmap;
+        try
+        {
+            using var partStream = imagePart.GetStream(FileMode.Open, FileAccess.Read);
+            using var imageStream = new MemoryStream();
+            partStream.CopyTo(imageStream);
+            imageStream.Position = 0;
+            var decoder = BitmapDecoder.Create(
+                imageStream,
+                BitmapCreateOptions.PreservePixelFormat,
+                BitmapCacheOption.OnLoad);
+            bitmap = decoder.Frames.FirstOrDefault()
+                ?? throw new InvalidDataException("DOCX 图片没有可解码的帧。");
+            if (bitmap.CanFreeze)
+            {
+                bitmap.Freeze();
+            }
+        }
+        catch (Exception exception) when (
+            exception is IOException or InvalidDataException or NotSupportedException or FormatException)
+        {
+            return null;
+        }
+
+        var image = new WpfImage
+        {
+            Source = bitmap,
+            Stretch = Stretch.Uniform,
+            MaxWidth = 640,
+            MaxHeight = 480
+        };
+
+        var extent = drawing.Descendants<DW.Extent>().FirstOrDefault();
+        if (extent?.Cx?.Value is > 0 && extent.Cy?.Value is > 0)
+        {
+            var width = extent.Cx.Value / 9525d;
+            var height = extent.Cy.Value / 9525d;
+            var scale = Math.Min(1d, Math.Min(640d / width, 480d / height));
+            image.Width = width * scale;
+            image.Height = height * scale;
+        }
+
+        return new WpfInlineUIContainer(image);
+    }
+
+    private static WpfTable ConvertTable(
+        OpenXmlTable table,
+        MainDocumentPart mainPart)
     {
         var result = new WpfTable
         {
             CellSpacing = 0,
             Margin = new Thickness(0, 0, 0, 12)
         };
-        result.Columns.Add(new TableColumn());
+        var columnCount = table.Elements<OpenXmlTableRow>()
+            .Select(row => row.Elements<OpenXmlTableCell>().Count())
+            .DefaultIfEmpty(1)
+            .Max();
+        for (var index = 0; index < Math.Max(1, columnCount); index++)
+        {
+            result.Columns.Add(new TableColumn());
+        }
+
         var rowGroup = new TableRowGroup();
         foreach (var row in table.Elements<OpenXmlTableRow>())
         {
             var wpfRow = new WpfTableRow();
             foreach (var cell in row.Elements<OpenXmlTableCell>())
             {
-                var cellText = string.Join(
-                    " ",
-                    cell.Descendants<OpenXmlText>().Select(item => item.Text));
-                var paragraph = new WpfParagraph(new WpfRun(cellText))
-                {
-                    Margin = new Thickness(4)
-                };
-                wpfRow.Cells.Add(new WpfTableCell(paragraph)
+                var wpfCell = new WpfTableCell
                 {
                     BorderBrush = Brushes.Gray,
                     BorderThickness = new Thickness(0.5),
                     Padding = new Thickness(4)
-                });
+                };
+                foreach (var element in cell.Elements())
+                {
+                    if (element is OpenXmlParagraph paragraph)
+                    {
+                        wpfCell.Blocks.Add(ConvertParagraph(paragraph, mainPart));
+                    }
+                    else if (element is OpenXmlTable nestedTable)
+                    {
+                        wpfCell.Blocks.Add(ConvertTable(nestedTable, mainPart));
+                    }
+                }
+
+                if (!wpfCell.Blocks.Any())
+                {
+                    wpfCell.Blocks.Add(new WpfParagraph());
+                }
+
+                wpfRow.Cells.Add(wpfCell);
             }
 
             rowGroup.Rows.Add(wpfRow);
@@ -389,16 +512,17 @@ public static class OfficeDocumentService
         var mainPart = word.AddMainDocumentPart();
         mainPart.Document = new Document(new Body());
         var body = mainPart.Document.Body!;
+        uint nextDrawingId = 1;
 
         foreach (var block in document.Blocks)
         {
             if (block is WpfParagraph paragraph)
             {
-                body.AppendChild(ConvertToOpenXmlParagraph(paragraph));
+                body.AppendChild(ConvertToOpenXmlParagraph(paragraph, mainPart, ref nextDrawingId));
             }
             else if (block is WpfTable table)
             {
-                body.AppendChild(ConvertToOpenXmlTable(table));
+                body.AppendChild(ConvertToOpenXmlTable(table, mainPart, ref nextDrawingId));
             }
             else
             {
@@ -415,7 +539,10 @@ public static class OfficeDocumentService
         mainPart.Document.Save();
     }
 
-    private static OpenXmlParagraph ConvertToOpenXmlParagraph(WpfParagraph paragraph)
+    private static OpenXmlParagraph ConvertToOpenXmlParagraph(
+        WpfParagraph paragraph,
+        MainDocumentPart mainPart,
+        ref uint nextDrawingId)
     {
         var result = new OpenXmlParagraph();
         if (paragraph.TextAlignment == WpfTextAlignment.Center)
@@ -439,6 +566,17 @@ public static class OfficeDocumentService
             if (inline is LineBreak)
             {
                 result.AppendChild(new OpenXmlRun(new Break()));
+                continue;
+            }
+
+            if (inline is WpfInlineUIContainer container)
+            {
+                if (container.Child is not WpfImage image)
+                {
+                    throw new NotSupportedException("DOCX 暂不支持保存此嵌入对象；文档未被覆盖。");
+                }
+
+                result.AppendChild(CreateImageRun(image, mainPart, ref nextDrawingId));
                 continue;
             }
 
@@ -467,6 +605,117 @@ public static class OfficeDocumentService
         }
 
         return result;
+    }
+
+    private static OpenXmlRun CreateImageRun(
+        WpfImage image,
+        MainDocumentPart mainPart,
+        ref uint nextDrawingId)
+    {
+        if (image.Source is not BitmapSource bitmap)
+        {
+            throw new NotSupportedException("DOCX 只能保存位图类型的嵌入图片；文档未被覆盖。");
+        }
+
+        using var imageStream = new MemoryStream();
+        var encoder = new PngBitmapEncoder();
+        encoder.Frames.Add(BitmapFrame.Create(bitmap));
+        encoder.Save(imageStream);
+        imageStream.Position = 0;
+
+        var imagePart = mainPart.AddImagePart(ImagePartType.Png);
+        imagePart.FeedData(imageStream);
+        var relationshipId = mainPart.GetIdOfPart(imagePart);
+        var (widthEmus, heightEmus) = GetImageExtent(image, bitmap);
+        var drawingId = nextDrawingId++;
+        var pictureName = $"Picture {drawingId}";
+
+        var nonVisualProperties = new PIC.NonVisualPictureProperties(
+            new PIC.NonVisualDrawingProperties
+            {
+                Id = drawingId,
+                Name = pictureName
+            },
+            new PIC.NonVisualPictureDrawingProperties());
+        var blipFill = new PIC.BlipFill(
+            new A.Blip
+            {
+                Embed = relationshipId,
+                CompressionState = A.BlipCompressionValues.Print
+            },
+            new A.Stretch(new A.FillRectangle()));
+        var shapeProperties = new PIC.ShapeProperties(
+            new A.Transform2D(
+                new A.Offset { X = 0L, Y = 0L },
+                new A.Extents { Cx = widthEmus, Cy = heightEmus }),
+            new A.PresetGeometry(new A.AdjustValueList())
+            {
+                Preset = A.ShapeTypeValues.Rectangle
+            });
+        var picture = new PIC.Picture(nonVisualProperties, blipFill, shapeProperties);
+        var graphicData = new A.GraphicData(picture)
+        {
+            Uri = "http://schemas.openxmlformats.org/drawingml/2006/picture"
+        };
+        var inline = new DW.Inline(
+            new DW.Extent { Cx = widthEmus, Cy = heightEmus },
+            new DW.EffectExtent
+            {
+                LeftEdge = 0L,
+                TopEdge = 0L,
+                RightEdge = 0L,
+                BottomEdge = 0L
+            },
+            new DW.DocProperties { Id = drawingId, Name = pictureName },
+            new DW.NonVisualGraphicFrameDrawingProperties(
+                new A.GraphicFrameLocks { NoChangeAspect = true }),
+            new A.Graphic(graphicData))
+        {
+            DistanceFromTop = 0U,
+            DistanceFromBottom = 0U,
+            DistanceFromLeft = 0U,
+            DistanceFromRight = 0U
+        };
+
+        return new OpenXmlRun(new OpenXmlDrawing(inline));
+    }
+
+    private static (long WidthEmus, long HeightEmus) GetImageExtent(
+        WpfImage image,
+        BitmapSource bitmap)
+    {
+        var naturalWidth = bitmap.DpiX > 0
+            ? bitmap.PixelWidth * 96d / bitmap.DpiX
+            : bitmap.PixelWidth;
+        var naturalHeight = bitmap.DpiY > 0
+            ? bitmap.PixelHeight * 96d / bitmap.DpiY
+            : bitmap.PixelHeight;
+        var width = double.IsFinite(image.Width) && image.Width > 0
+            ? image.Width
+            : image.ActualWidth > 0 ? image.ActualWidth : naturalWidth;
+        var height = double.IsFinite(image.Height) && image.Height > 0
+            ? image.Height
+            : image.ActualHeight > 0 ? image.ActualHeight : naturalHeight;
+
+        if (width <= 0 || height <= 0)
+        {
+            throw new InvalidDataException("嵌入图片没有有效尺寸；文档未被覆盖。");
+        }
+
+        var maxWidth = double.IsFinite(image.MaxWidth) && image.MaxWidth > 0
+            ? image.MaxWidth
+            : double.PositiveInfinity;
+        var maxHeight = double.IsFinite(image.MaxHeight) && image.MaxHeight > 0
+            ? image.MaxHeight
+            : double.PositiveInfinity;
+        var scale = Math.Min(1d, Math.Min(maxWidth / width, maxHeight / height));
+        width *= scale;
+        height *= scale;
+
+        const double emusPerDip = 9525d;
+        return (
+            Math.Max(1L, (long)Math.Round(width * emusPerDip)),
+            Math.Max(1L, (long)Math.Round(height * emusPerDip)));
     }
 
     private static OpenXmlRun CreateRun(string text, bool bold, bool italic, bool underline, double? fontSize)
@@ -505,7 +754,10 @@ public static class OfficeDocumentService
         return run;
     }
 
-    private static OpenXmlTable ConvertToOpenXmlTable(WpfTable table)
+    private static OpenXmlTable ConvertToOpenXmlTable(
+        WpfTable table,
+        MainDocumentPart mainPart,
+        ref uint nextDrawingId)
     {
         var result = new OpenXmlTable();
         var props = new TableProperties(
@@ -524,9 +776,40 @@ public static class OfficeDocumentService
                 var openXmlRow = new OpenXmlTableRow();
                 foreach (var cell in row.Cells)
                 {
-                    var text = new TextRange(cell.ContentStart, cell.ContentEnd).Text.TrimEnd('\r', '\n');
-                    openXmlRow.AppendChild(new OpenXmlTableCell(
-                        new OpenXmlParagraph(new OpenXmlRun(new OpenXmlText(text)))));
+                    var openXmlCell = new OpenXmlTableCell();
+                    foreach (var block in cell.Blocks)
+                    {
+                        if (block is WpfParagraph paragraph)
+                        {
+                            openXmlCell.AppendChild(ConvertToOpenXmlParagraph(
+                                paragraph,
+                                mainPart,
+                                ref nextDrawingId));
+                        }
+                        else if (block is WpfTable nestedTable)
+                        {
+                            openXmlCell.AppendChild(ConvertToOpenXmlTable(
+                                nestedTable,
+                                mainPart,
+                                ref nextDrawingId));
+                        }
+                        else
+                        {
+                            var text = new TextRange(block.ContentStart, block.ContentEnd)
+                                .Text
+                                .TrimEnd('\r', '\n');
+                            openXmlCell.AppendChild(new OpenXmlParagraph(
+                                new OpenXmlRun(new OpenXmlText(text))));
+                        }
+                    }
+
+                    if (!openXmlCell.ChildElements.Any() || openXmlCell.LastChild is OpenXmlTable)
+                    {
+                        openXmlCell.AppendChild(new OpenXmlParagraph(
+                            new OpenXmlRun(new OpenXmlText(string.Empty))));
+                    }
+
+                    openXmlRow.AppendChild(openXmlCell);
                 }
 
                 result.AppendChild(openXmlRow);
@@ -608,6 +891,23 @@ public static class OfficeDocumentService
         var range = new TextRange(document.ContentStart, document.ContentEnd);
         using var stream = File.Create(path);
         range.Save(stream, DataFormats.Html);
+    }
+
+    private static bool ContainsEmbeddedUiElement(FlowDocument document)
+    {
+        var pointer = document.ContentStart;
+        while (pointer is not null && pointer.CompareTo(document.ContentEnd) < 0)
+        {
+            if (pointer.GetPointerContext(LogicalDirection.Forward) == TextPointerContext.ElementStart &&
+                pointer.GetAdjacentElement(LogicalDirection.Forward) is WpfInlineUIContainer)
+            {
+                return true;
+            }
+
+            pointer = pointer.GetNextContextPosition(LogicalDirection.Forward);
+        }
+
+        return false;
     }
 
     private static string NormalizeExtension(string extension)

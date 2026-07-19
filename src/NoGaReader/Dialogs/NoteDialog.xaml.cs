@@ -33,7 +33,21 @@ public partial class NoteDialog : Window
             App.ApplyWindowChromeTheme(this);
             NoteTextBox.Focus();
             NoteTextBox.CaretIndex = NoteTextBox.Text.Length;
+            RefreshSaveEnabled();
         };
+    }
+
+    private bool AllowsEmptyNote =>
+        string.Equals(Title, "编辑作者", StringComparison.Ordinal) ||
+        string.Equals(Title, "编辑书名", StringComparison.Ordinal) ||
+        string.Equals(Title, "编辑标签", StringComparison.Ordinal);
+
+    private void RefreshSaveEnabled()
+    {
+        if (SaveButton is not null)
+        {
+            SaveButton.IsEnabled = AllowsEmptyNote || !string.IsNullOrWhiteSpace(NoteTextBox.Text);
+        }
     }
 
     public string NoteText => NoteTextBox.Text.Trim();
@@ -61,15 +75,12 @@ public partial class NoteDialog : Window
 
     private void NoteTextBox_TextChanged(object sender, TextChangedEventArgs e)
     {
-        if (SaveButton is not null)
-        {
-            SaveButton.IsEnabled = !string.IsNullOrWhiteSpace(NoteTextBox.Text);
-        }
+        RefreshSaveEnabled();
     }
 
     private void SaveButton_Click(object sender, RoutedEventArgs e)
     {
-        if (string.IsNullOrWhiteSpace(NoteText))
+        if (string.IsNullOrWhiteSpace(NoteText) && !AllowsEmptyNote)
         {
             return;
         }
@@ -89,9 +100,15 @@ public partial class NoteDialog : Window
             e.Handled = true;
             DialogResult = false;
         }
-        else if (e.Key == Key.Enter && Keyboard.Modifiers.HasFlag(ModifierKeys.Control) && SaveButton.IsEnabled)
+        else if (e.Key == Key.Enter && Keyboard.Modifiers.HasFlag(ModifierKeys.Control) &&
+                 (SaveButton.IsEnabled || AllowsEmptyNote))
         {
             e.Handled = true;
+            if (string.IsNullOrWhiteSpace(NoteText) && !AllowsEmptyNote)
+            {
+                return;
+            }
+
             DialogResult = true;
         }
     }

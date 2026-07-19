@@ -7,12 +7,14 @@
         ResizeMode="CanResizeWithGrip"
         WindowStartupLocation="CenterOwner"
         ShowInTaskbar="False"
+        Background="{DynamicResource WindowBackgroundBrush}"
+        Foreground="{DynamicResource TextBrush}"
         AllowDrop="True"
         PreviewDragOver="Window_PreviewDragOver"
         Drop="Window_Drop"
         PreviewKeyDown="Window_PreviewKeyDown"
         AutomationProperties.Name="批量电子书转换">
-    <Grid Margin="22">
+    <Grid Margin="22" Background="{DynamicResource WindowBackgroundBrush}">
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="Auto"/>
@@ -27,15 +29,19 @@
                 <ColumnDefinition Width="Auto"/>
             </Grid.ColumnDefinitions>
             <StackPanel>
-                <TextBlock Text="批量转换" FontSize="22" FontWeight="SemiBold"/>
+                <TextBlock Text="批量转换" FontSize="22" FontWeight="SemiBold"
+                           Foreground="{DynamicResource TextBrush}"/>
                 <TextBlock Margin="0,6,0,0"
                            Text="免费无限次。基于本地 Calibre ebook-convert，文件不会上传。"
                            Foreground="{DynamicResource MutedTextBrush}" TextWrapping="Wrap"/>
             </StackPanel>
             <Button Grid.Column="1" Width="36" Height="36" Padding="0" VerticalAlignment="Top"
+                    Background="Transparent" BorderBrush="Transparent"
+                    Foreground="{DynamicResource TextBrush}"
                     Click="CloseButton_Click" ToolTip="关闭"
                     AutomationProperties.Name="关闭转换窗口">
-                <TextBlock Text="&#xE8BB;" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets" FontSize="12"/>
+                <TextBlock Text="&#xE8BB;" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets" FontSize="12"
+                           Foreground="{DynamicResource TextBrush}"/>
             </Button>
         </Grid>
 
@@ -49,15 +55,22 @@
                     <ColumnDefinition Width="Auto"/>
                 </Grid.ColumnDefinitions>
                 <StackPanel>
-                    <TextBlock x:Name="RuntimeStatusText" FontWeight="SemiBold" TextWrapping="Wrap"/>
+                    <TextBlock x:Name="RuntimeStatusText" FontWeight="SemiBold" TextWrapping="Wrap"
+                               Foreground="{DynamicResource TextBrush}"/>
                     <TextBlock x:Name="RuntimePathText" Margin="0,6,0,0"
                                Style="{StaticResource CaptionTextStyle}" TextWrapping="Wrap"/>
                 </StackPanel>
                 <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center" Margin="16,0,0,0">
                     <Button Content="自动检测" Padding="12,8" Margin="0,0,8,0"
+                            Background="{DynamicResource SurfaceBrush}"
+                            BorderBrush="{DynamicResource BorderBrush}"
+                            Foreground="{DynamicResource TextBrush}"
                             Click="DetectRuntimeButton_Click"
                             AutomationProperties.Name="自动检测 Calibre"/>
                     <Button Content="指定引擎…" Padding="12,8"
+                            Background="{DynamicResource SurfaceBrush}"
+                            BorderBrush="{DynamicResource BorderBrush}"
+                            Foreground="{DynamicResource TextBrush}"
                             Click="BrowseRuntimeButton_Click"
                             AutomationProperties.Name="指定 ebook-convert 路径"/>
                 </StackPanel>
@@ -81,19 +94,31 @@
                         <ColumnDefinition Width="Auto"/>
                     </Grid.ColumnDefinitions>
                     <TextBlock VerticalAlignment="Center" Text="任务列表（可拖入文件）"
-                               FontWeight="SemiBold"/>
+                               FontWeight="SemiBold" Foreground="{DynamicResource TextBrush}"/>
                     <Button Grid.Column="1" Content="添加文件" Padding="12,7" Margin="0,0,8,0"
+                            Background="{DynamicResource SurfaceAltBrush}"
+                            BorderBrush="{DynamicResource BorderBrush}"
+                            Foreground="{DynamicResource TextBrush}"
                             Click="AddFilesButton_Click"
                             AutomationProperties.Name="添加转换文件"/>
                     <Button Grid.Column="2" Content="移除所选" Padding="12,7" Margin="0,0,8,0"
+                            Background="{DynamicResource SurfaceAltBrush}"
+                            BorderBrush="{DynamicResource BorderBrush}"
+                            Foreground="{DynamicResource TextBrush}"
                             Click="RemoveSelectedButton_Click"
                             AutomationProperties.Name="移除所选转换任务"/>
                     <Button Grid.Column="3" Content="清空" Padding="12,7"
+                            Background="{DynamicResource SurfaceAltBrush}"
+                            BorderBrush="{DynamicResource BorderBrush}"
+                            Foreground="{DynamicResource TextBrush}"
                             Click="ClearButton_Click"
                             AutomationProperties.Name="清空转换任务"/>
                 </Grid>
                 <ListView x:Name="JobList" Grid.Row="1"
                           SelectionMode="Extended"
+                          Background="{DynamicResource SurfaceBrush}"
+                          Foreground="{DynamicResource TextBrush}"
+                          BorderBrush="{DynamicResource BorderBrush}"
                           AutomationProperties.Name="转换任务列表">
                     <ListView.View>
                         <GridView>
@@ -118,12 +143,16 @@
                 <RowDefinition Height="Auto"/>
             </Grid.RowDefinitions>
 
-            <TextBlock Text="目标格式" VerticalAlignment="Center"/>
+            <TextBlock Text="目标格式" VerticalAlignment="Center" Foreground="{DynamicResource TextBrush}"/>
             <ComboBox x:Name="TargetFormatCombo" Grid.Column="1" Height="34" Margin="12,0,0,0"
                       DisplayMemberPath="DisplayName"
+                      Background="{DynamicResource SurfaceBrush}"
+                      Foreground="{DynamicResource TextBrush}"
+                      BorderBrush="{DynamicResource BorderBrush}"
                       AutomationProperties.Name="目标格式"/>
 
-            <TextBlock Grid.Row="1" Margin="0,12,0,0" Text="输出目录" VerticalAlignment="Center"/>
+            <TextBlock Grid.Row="1" Margin="0,12,0,0" Text="输出目录" VerticalAlignment="Center"
+                       Foreground="{DynamicResource TextBrush}"/>
             <Grid Grid.Row="1" Grid.Column="1" Margin="12,12,0,0">
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="*"/>
@@ -132,12 +161,16 @@
                 <TextBox x:Name="OutputDirectoryBox" Height="34" Padding="10,0" VerticalContentAlignment="Center"
                          AutomationProperties.Name="转换输出目录"/>
                 <Button Grid.Column="1" Content="浏览…" Margin="8,0,0,0" Padding="12,7"
+                        Background="{DynamicResource SurfaceAltBrush}"
+                        BorderBrush="{DynamicResource BorderBrush}"
+                        Foreground="{DynamicResource TextBrush}"
                         Click="BrowseOutputButton_Click"
                         AutomationProperties.Name="浏览输出目录"/>
             </Grid>
             <CheckBox x:Name="UseSourceDirectoryCheck" Grid.Row="1" Grid.Column="2"
                       Margin="16,12,0,0" VerticalAlignment="Center"
                       Content="保存到源文件目录"
+                      Foreground="{DynamicResource TextBrush}"
                       Checked="UseSourceDirectoryCheck_Changed"
                       Unchecked="UseSourceDirectoryCheck_Changed"
                       AutomationProperties.Name="保存到源文件目录"/>
@@ -153,6 +186,9 @@
             <TextBlock x:Name="FooterStatusText" VerticalAlignment="Center"
                        Foreground="{DynamicResource MutedTextBrush}" TextWrapping="Wrap"/>
             <Button Grid.Column="1" Content="打开输出" Padding="14,9" Margin="0,0,8,0"
+                    Background="{DynamicResource SurfaceAltBrush}"
+                    BorderBrush="{DynamicResource BorderBrush}"
+                    Foreground="{DynamicResource TextBrush}"
                     Click="OpenOutputButton_Click"
                     AutomationProperties.Name="打开输出位置"/>
             <Button Grid.Column="2" x:Name="StartButton" Content="开始转换" Padding="16,9" Margin="0,0,8,0"
@@ -161,6 +197,9 @@
                     AutomationProperties.Name="开始批量转换"/>
             <Button Grid.Column="3" x:Name="CancelButton" Content="取消" Padding="14,9"
                     IsEnabled="False"
+                    Background="{DynamicResource SurfaceAltBrush}"
+                    BorderBrush="{DynamicResource BorderBrush}"
+                    Foreground="{DynamicResource TextBrush}"
                     Click="CancelButton_Click"
                     AutomationProperties.Name="取消转换"/>
         </Grid>

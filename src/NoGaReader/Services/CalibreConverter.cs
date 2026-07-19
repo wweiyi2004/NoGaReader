@@ -33,8 +33,9 @@ public sealed class CalibreConverter : IFormatConverter
     private static readonly HashSet<string> SupportedInputs = new(StringComparer.OrdinalIgnoreCase)
     {
         ".epub", ".mobi", ".azw", ".azw3", ".azw4", ".pdf", ".fb2", ".txt", ".html", ".htm",
-        ".docx", ".rtf", ".cbz", ".cbr", ".cb7", ".zip", ".rar", ".md", ".markdown",
-        ".lit", ".lrf", ".pdb", ".prc", ".pml", ".rb", ".snb", ".tcr", ".txtz", ".htmlz"
+        ".docx", ".odt", ".rtf", ".cbz", ".cbr", ".cb7", ".zip", ".rar", ".md", ".markdown",
+        ".lit", ".lrf", ".pdb", ".prc", ".pml", ".rb", ".snb", ".tcr", ".txtz", ".htmlz",
+        ".chm", ".djvu", ".djv"
     };
 
     private static readonly ConversionFormat[] SupportedOutputs =
@@ -48,7 +49,12 @@ public sealed class CalibreConverter : IFormatConverter
         new(".rtf", "RTF"),
         new(".txt", "TXT"),
         new(".htmlz", "HTMLZ"),
-        new(".zip", "ZIP")
+        new(".zip", "ZIP"),
+        new(".txtz", "TXTZ"),
+        new(".lit", "LIT"),
+        new(".lrf", "LRF"),
+        new(".pmlz", "PMLZ"),
+        new(".rb", "RB")
     ];
 
     private static readonly ConversionFormat[] SupportedInputFormats =
@@ -62,10 +68,16 @@ public sealed class CalibreConverter : IFormatConverter
         new(".txt", "TXT"),
         new(".html", "HTML"),
         new(".docx", "DOCX"),
+        new(".odt", "ODT"),
         new(".rtf", "RTF"),
         new(".cbz", "CBZ"),
         new(".cbr", "CBR"),
-        new(".md", "Markdown")
+        new(".md", "Markdown"),
+        new(".lit", "LIT"),
+        new(".lrf", "LRF"),
+        new(".pdb", "PDB"),
+        new(".chm", "CHM"),
+        new(".djvu", "DJVU")
     ];
 
     private readonly AppSettings _settings;

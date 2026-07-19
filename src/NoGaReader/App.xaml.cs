@@ -50,6 +50,7 @@ public partial class App : Application
         AppPaths.StartCacheCleanup();
         var settingsStore = new SettingsStore();
         var settings = settingsStore.Load();
+        UiStrings.ApplyFromSettings(settings.UiLanguage);
         ApplyTheme(settings.Theme);
 
         var initialFile = e.Args
@@ -189,8 +190,10 @@ public partial class App : Application
         resources["SurfaceBrush"] = Brush(dark ? "#222222" : "#FFFFFF");
         resources["SurfaceAltBrush"] = Brush(dark ? "#2A2A2A" : "#F0EFEC");
         resources["ReaderCanvasBrush"] = Brush(dark ? "#0F0F0F" : "#EBEAE6");
-        resources["PrimaryBrush"] = Brush(dark ? "#D6D3D1" : "#57534E");
-        resources["PrimaryHoverBrush"] = Brush(dark ? "#E7E5E4" : "#44403C");
+        // Keep primary action buttons high-contrast in both themes:
+        // dark mode uses a solid light chip + dark label so "完成" stays readable.
+        resources["PrimaryBrush"] = Brush(dark ? "#E7E5E4" : "#57534E");
+        resources["PrimaryHoverBrush"] = Brush(dark ? "#F5F5F4" : "#44403C");
         resources["PrimarySoftBrush"] = Brush(dark ? "#2F2D2B" : "#E7E5E4");
         resources["PrimaryContrastBrush"] = Brush(dark ? "#1C1917" : "#FFFFFF");
         resources["TextBrush"] = Brush(dark ? "#F5F5F4" : "#1C1917");

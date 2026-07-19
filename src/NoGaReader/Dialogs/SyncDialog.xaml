@@ -1,61 +1,79 @@
-<Window x:Class="NoGaReader.Dialogs.SyncDialog"
-        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
-        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="云同步"
-        Width="640" Height="460"
-        MinWidth="520" MinHeight="380"
-        WindowStartupLocation="CenterOwner"
-        ShowInTaskbar="False"
-        PreviewKeyDown="Window_PreviewKeyDown"
-        AutomationProperties.Name="云同步设置">
-    <Grid Margin="22">
-        <Grid.RowDefinitions>
-            <RowDefinition Height="Auto"/>
-            <RowDefinition Height="*"/>
-            <RowDefinition Height="Auto"/>
-        </Grid.RowDefinitions>
+ <Window x:Class="NoGaReader.Dialogs.SyncDialog"
+         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+         Title="云同步"
+         Width="640" Height="460"
+         MinWidth="520" MinHeight="380"
+         WindowStartupLocation="CenterOwner"
+         ShowInTaskbar="False"
+         Background="{DynamicResource WindowBackgroundBrush}"
+         Foreground="{DynamicResource TextBrush}"
+         PreviewKeyDown="Window_PreviewKeyDown"
+         AutomationProperties.Name="云同步设置">
+     <Grid Margin="22">
+         <Grid.RowDefinitions>
+             <RowDefinition Height="Auto"/>
+             <RowDefinition Height="*"/>
+             <RowDefinition Height="Auto"/>
+         </Grid.RowDefinitions>
 
-        <StackPanel>
-            <TextBlock Text="云同步" FontSize="22" FontWeight="SemiBold"/>
-            <TextBlock Margin="0,6,0,0" TextWrapping="Wrap"
-                       Foreground="{DynamicResource MutedTextBrush}"
-                       Text="可选功能，默认关闭。使用本地/网盘文件夹同步阅读进度、批注与设置，不上传源书文件。"/>
-        </StackPanel>
+         <StackPanel>
+             <TextBlock Text="云同步" FontSize="22" FontWeight="SemiBold"
+                        Foreground="{DynamicResource TextBrush}"/>
+             <TextBlock Margin="0,6,0,0" TextWrapping="Wrap"
+                        Foreground="{DynamicResource MutedTextBrush}"
+                        Text="可选功能，默认关闭。使用本地/网盘文件夹同步阅读进度、批注与设置，不上传源书文件。"/>
+         </StackPanel>
 
-        <StackPanel Grid.Row="1" Margin="0,18,0,0">
-            <CheckBox x:Name="EnableSyncCheck" Content="启用文件夹同步" Margin="0,0,0,12"
-                      Checked="EnableSyncCheck_Changed" Unchecked="EnableSyncCheck_Changed"/>
-            <TextBlock Text="同步文件夹（可指向 OneDrive/坚果云 等同步目录）" Margin="0,0,0,6"/>
-            <Grid>
-                <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="*"/>
-                    <ColumnDefinition Width="Auto"/>
-                </Grid.ColumnDefinitions>
-                <TextBox x:Name="FolderBox" Height="34" Padding="10,0" VerticalContentAlignment="Center"/>
-                <Button Grid.Column="1" Content="浏览…" Margin="8,0,0,0" Padding="12,7"
-                        Click="BrowseFolder_Click"/>
-            </Grid>
-            <CheckBox x:Name="IncludeAnnotationsCheck" Content="同步书签/高亮/笔记" Margin="0,16,0,8"/>
-            <CheckBox x:Name="IncludeSettingsCheck" Content="同步阅读与漫画设置" Margin="0,0,0,16"/>
-            <Border Padding="12" Background="{DynamicResource SurfaceAltBrush}"
-                    BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1"
-                    CornerRadius="{StaticResource RadiusMd}">
-                <TextBlock x:Name="StatusText" TextWrapping="Wrap"/>
-            </Border>
-        </StackPanel>
+         <StackPanel Grid.Row="1" Margin="0,18,0,0">
+             <CheckBox x:Name="EnableSyncCheck" Content="启用文件夹同步" Margin="0,0,0,12"
+                       Foreground="{DynamicResource TextBrush}"
+                       Checked="EnableSyncCheck_Changed" Unchecked="EnableSyncCheck_Changed"/>
+             <TextBlock Text="同步文件夹（可指向 OneDrive/坚果云 等同步目录）" Margin="0,0,0,6"
+                        Foreground="{DynamicResource TextBrush}"/>
+             <Grid>
+                 <Grid.ColumnDefinitions>
+                     <ColumnDefinition Width="*"/>
+                     <ColumnDefinition Width="Auto"/>
+                 </Grid.ColumnDefinitions>
+                 <TextBox x:Name="FolderBox" Height="34" Padding="10,0" VerticalContentAlignment="Center"/>
+                 <Button Grid.Column="1" Content="浏览…" Margin="8,0,0,0" Padding="12,7"
+                         Background="{DynamicResource SurfaceAltBrush}"
+                         BorderBrush="{DynamicResource BorderBrush}"
+                         Foreground="{DynamicResource TextBrush}"
+                         Click="BrowseFolder_Click"/>
+             </Grid>
+             <CheckBox x:Name="IncludeAnnotationsCheck" Content="同步书签/高亮/笔记" Margin="0,16,0,8"
+                       Foreground="{DynamicResource TextBrush}"/>
+             <CheckBox x:Name="IncludeSettingsCheck" Content="同步阅读与漫画设置" Margin="0,0,0,16"
+                       Foreground="{DynamicResource TextBrush}"/>
+             <Border Padding="12" Background="{DynamicResource SurfaceAltBrush}"
+                     BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1"
+                     CornerRadius="{StaticResource RadiusMd}">
+                 <TextBlock x:Name="StatusText" TextWrapping="Wrap"
+                            Foreground="{DynamicResource TextBrush}"/>
+             </Border>
+         </StackPanel>
 
-        <Grid Grid.Row="2" Margin="0,18,0,0">
-            <Grid.ColumnDefinitions>
-                <ColumnDefinition Width="*"/>
-                <ColumnDefinition Width="Auto"/>
-                <ColumnDefinition Width="Auto"/>
-            </Grid.ColumnDefinitions>
-            <Button Content="立即同步" Style="{StaticResource PrimaryButtonStyle}"
-                    Padding="16,9" HorizontalAlignment="Left"
-                    Click="SyncNow_Click" AutomationProperties.Name="立即同步"/>
-            <Button Grid.Column="1" Content="保存" Padding="14,9" Margin="0,0,8,0"
-                    Click="Save_Click"/>
-            <Button Grid.Column="2" Content="关闭" Padding="14,9" Click="Close_Click"/>
-        </Grid>
-    </Grid>
-</Window>
+         <Grid Grid.Row="2" Margin="0,18,0,0">
+             <Grid.ColumnDefinitions>
+                 <ColumnDefinition Width="*"/>
+                 <ColumnDefinition Width="Auto"/>
+                 <ColumnDefinition Width="Auto"/>
+             </Grid.ColumnDefinitions>
+             <Button Content="立即同步" Style="{StaticResource PrimaryButtonStyle}"
+                     Padding="16,9" HorizontalAlignment="Left"
+                     Click="SyncNow_Click" AutomationProperties.Name="立即同步"/>
+             <Button Grid.Column="1" Content="保存" Padding="14,9" Margin="0,0,8,0"
+                     Background="{DynamicResource SurfaceAltBrush}"
+                     BorderBrush="{DynamicResource BorderBrush}"
+                     Foreground="{DynamicResource TextBrush}"
+                     Click="Save_Click"/>
+             <Button Grid.Column="2" Content="关闭" Padding="14,9"
+                     Background="{DynamicResource SurfaceAltBrush}"
+                     BorderBrush="{DynamicResource BorderBrush}"
+                     Foreground="{DynamicResource TextBrush}"
+                     Click="Close_Click"/>
+         </Grid>
+     </Grid>
+ </Window>

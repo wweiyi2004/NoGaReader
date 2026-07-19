@@ -504,13 +504,25 @@ public partial class MainWindow : Window
     {
         if (ReferenceEquals(_activeReaderTab, tab) && _session is not null)
         {
-            await CaptureReadingLocationAsync();
-            SaveReadingState();
-            await PersistCurrentLocationAsync();
-            SnapshotActiveTabFromSession();
+            try
+            {
+                await CaptureReadingLocationAsync();
+                SaveReadingState();
+                await PersistCurrentLocationAsync();
+                SnapshotActiveTabFromSession();
+            }
+            catch
+            {
+                // Closing must not be blocked by save failures.
+            }
         }
 
         var index = _readerTabs.IndexOf(tab);
+        if (index < 0)
+        {
+            return;
+        }
+
         _readerTabs.Remove(tab);
 
         if (_readerTabs.Count == 0)
@@ -518,28 +530,50 @@ public partial class MainWindow : Window
             _activeReaderTab = null;
             _session = null;
             _currentBook = null;
-            WelcomePanel.Visibility = Visibility.Visible;
-            ReaderView.Visibility = Visibility.Collapsed;
-            DocumentTitleText.Text = "NoGaReader";
-            CurrentSectionText.Text = "本地阅读器";
-            Title = "阅读窗口 — NoGaReader";
+            _comicPageItems.Clear();
             TocTree.ItemsSource = null;
             if (ReaderTocTree is not null)
             {
                 ReaderTocTree.ItemsSource = null;
             }
-            _comicPageItems.Clear();
-            UpdateReaderControls();
+
             if (ReaderTabsBar is not null)
             {
                 ReaderTabsBar.Visibility = Visibility.Collapsed;
             }
-            // Keep window open for next open; shell remains separate.
+
+            // Last tab closed: dismiss the whole reader window (console stays open).
+            if (_isReaderWindow)
+            {
+                await Dispatcher.InvokeAsync(() =>
+                {
+                    try
+                    {
+                        Close();
+                    }
+                    catch
+                    {
+                        // ignore
+                    }
+                });
+            }
+            else
+            {
+                WelcomePanel.Visibility = Visibility.Visible;
+                ReaderView.Visibility = Visibility.Collapsed;
+                DocumentTitleText.Text = "NoGaReader";
+                CurrentSectionText.Text = UiStrings.LocalReaderSubtitle;
+                UpdateReaderControls();
+            }
+
             return;
         }
 
-        var next = _readerTabs[Math.Clamp(index, 0, _readerTabs.Count - 1)];
-        await SwitchToReaderTabAsync(next);
+        if (ReferenceEquals(_activeReaderTab, tab))
+        {
+            var nextIndex = Math.Clamp(index, 0, _readerTabs.Count - 1);
+            await SwitchToReaderTabAsync(_readerTabs[nextIndex]);
+        }
     }
 
 
@@ -790,6 +824,13 @@ public partial class MainWindow : Window
 
     private void InitializeSettingsControls()
     {
+        UiStrings.ApplyFromSettings(_settings.UiLanguage);
+        var languageTag = string.IsNullOrWhiteSpace(_settings.UiLanguage)
+            ? string.Empty
+            : (_settings.UiLanguage.StartsWith("en", StringComparison.OrdinalIgnoreCase) ? "en-US" : "zh-CN");
+        SelectExclusiveToggle(languageTag, LanguageSystemButton, LanguageZhButton, LanguageEnButton);
+        ApplyLocalizedShellText();
+
         SelectExclusiveToggle(
             _settings.Theme.ToString(),
             SystemThemeButton,
@@ -1162,11 +1203,16 @@ public partial class MainWindow : Window
 
         _navigationRestoreProgress = null;
 
+        if (_session?.Kind == ReaderDocumentKind.Pdf)
+        {
+            _ = SyncPdfLocationAsync();
+        }
+
         UpdateReaderControls();
         StatusText.Text = _session?.Kind switch
         {
             ReaderDocumentKind.Epub => "EPUB · 已启用阅读排版",
-            ReaderDocumentKind.Pdf => "PDF · 本地阅读",
+            ReaderDocumentKind.Pdf => "PDF · 本地阅读 · 支持页码跳转与页内查找",
             ReaderDocumentKind.Comic => $"{GetComicSourceText()} 漫画 · {GetComicDisplayText()} · {GetComicDirectionText()}",
             ReaderDocumentKind.FictionBook => "FB2 · 已启用阅读排版",
             ReaderDocumentKind.Image => "图片 · 本地查看",
@@ -1493,6 +1539,301 @@ public partial class MainWindow : Window
         await TurnPageOrMoveSectionAsync(direction);
     }
 
+    private async void PreviousChapterButton_Click(object sender, RoutedEventArgs e)
+    {
+        await MoveSectionAsync(-1);
+    }
+
+    private async void NextChapterButton_Click(object sender, RoutedEventArgs e)
+    {
+        await MoveSectionAsync(1);
+    }
+
+    private async void PageJumpButton_Click(object sender, RoutedEventArgs e)
+    {
+        await JumpToPageFromBoxAsync();
+    }
+
+    private async void PageJumpBox_KeyDown(object sender, KeyEventArgs e)
+    {
+        if (e.Key == Key.Enter)
+        {
+            e.Handled = true;
+            await JumpToPageFromBoxAsync();
+        }
+    }
+
+    private async Task JumpToPageFromBoxAsync()
+    {
+        if (_session is null || !_webViewReady)
+        {
+            return;
+        }
+
+        if (!int.TryParse(PageJumpBox.Text.Trim(), out var page) || page < 1)
+        {
+            StatusText.Text = "请输入有效页码";
+            return;
+        }
+
+        if (IsComicSession)
+        {
+            var index = Math.Clamp(page - 1, 0, Math.Max(0, _session.ComicPages.Count - 1));
+            if (_comicReady)
+            {
+                _ = await _comicController.GoToPageAsync(index);
+            }
+            else
+            {
+                _session.CurrentSectionIndex = index;
+                await NavigateToCurrentSectionAsync();
+            }
+
+            StatusText.Text = $"已跳到第 {index + 1} 页";
+            return;
+        }
+
+        if (SupportsReaderRuntime)
+        {
+            if (_pageCount > 0)
+            {
+                var progress = Math.Clamp((page - 1d) / Math.Max(1, _pageCount - 1), 0, 1);
+                try
+                {
+                    await _readerController.RestoreProgressAsync(progress);
+                    _sectionProgress = progress;
+                    _currentPage = Math.Clamp(page, 1, _pageCount);
+                    UpdateReaderControls();
+                    StatusText.Text = $"已跳到本章第 {page} 页";
+                }
+                catch (InvalidOperationException)
+                {
+                    StatusText.Text = "当前无法跳页";
+                }
+
+                return;
+            }
+
+            // No in-chapter paging info: treat as section index for multi-section books.
+            if (_session.Sections.Count > 1)
+            {
+                var sectionIndex = Math.Clamp(page - 1, 0, _session.Sections.Count - 1);
+                _session.CurrentSectionIndex = sectionIndex;
+                _sectionProgress = 0;
+                await NavigateToCurrentSectionAsync();
+                StatusText.Text = $"已跳到第 {sectionIndex + 1} 章";
+            }
+
+            return;
+        }
+
+        if (_session.Kind is ReaderDocumentKind.Pdf or ReaderDocumentKind.Image)
+        {
+            await JumpFixedLayoutPageAsync(page);
+            return;
+        }
+
+        StatusText.Text = "当前文档不支持页码跳转";
+    }
+
+    private async Task JumpFixedLayoutPageAsync(int page)
+    {
+        if (!_webViewReady || ReaderView.CoreWebView2 is null || _session is null)
+        {
+            return;
+        }
+
+        // Edge PDF viewer understands #page=N; also try JS fallback for some viewers.
+        try
+        {
+            var relativePath = Path.GetRelativePath(_session.RootDirectory, _session.CurrentSection.FullPath);
+            var encodedPath = string.Join(
+                '/',
+                relativePath.Replace('\\', '/').Split('/').Select(Uri.EscapeDataString));
+            ReaderView.CoreWebView2.Navigate($"https://{BookHostName}/{encodedPath}#page={page}");
+            _currentPage = page;
+            if (_pageCount > 0)
+            {
+                _pageCount = Math.Max(_pageCount, page);
+            }
+
+            UpdateReaderControls();
+            StatusText.Text = $"已请求跳到第 {page} 页";
+        }
+        catch (Exception)
+        {
+            StatusText.Text = "PDF 跳页失败";
+        }
+
+        await Task.CompletedTask;
+    }
+
+    private async Task FindInPageAsync(string query)
+    {
+        if (!_webViewReady || ReaderView.CoreWebView2 is null || string.IsNullOrWhiteSpace(query))
+        {
+            return;
+        }
+
+        try
+        {
+            // Prefer the WebView2 Find API when the installed runtime supports it;
+            // older runtimes can still use the script fallback below.
+            var core = ReaderView.CoreWebView2;
+            try
+            {
+                var options = core.Environment.CreateFindOptions();
+                options.FindTerm = query;
+                options.IsCaseSensitive = false;
+                options.ShouldHighlightAllMatches = true;
+                await core.Find.StartAsync(options);
+                StatusText.Text = $"页内查找：{query}";
+                return;
+            }
+            catch (Exception exception)
+            {
+                Debug.WriteLine(exception);
+                // Fall through whenever the native Find API is unavailable or rejects
+                // the current document; window.find still works for ordinary HTML.
+            }
+
+            var script =
+                "(function(q){" +
+                "try{" +
+                "if(window.find){ var ok=window.find(q,false,false,true,false,false,false); return ok?'hit':'miss'; }" +
+                "return 'unsupported';" +
+                "}catch(e){ return 'error'; }" +
+                "})(" + JsonSerializer.Serialize(query) + ")";
+            var result = await core.ExecuteScriptAsync(script);
+            StatusText.Text = result.Contains("hit", StringComparison.OrdinalIgnoreCase)
+                ? $"页内找到：{query}"
+                : $"页内未找到：{query}";
+        }
+        catch (Exception exception)
+        {
+            StatusText.Text = "页内查找失败";
+            Debug.WriteLine(exception);
+        }
+    }
+
+    private async Task SyncPdfLocationAsync()
+    {
+        if (_session?.Kind != ReaderDocumentKind.Pdf || !_webViewReady || ReaderView.CoreWebView2 is null)
+        {
+            return;
+        }
+
+        try
+        {
+            // Best-effort: Edge PDF viewer may expose page via hash or PDF.js-like API.
+            const string script =
+                """
+                (() => {
+                  try {
+                    const hash = String(location.hash || '');
+                    const pageMatch = hash.match(/page=(\d+)/i);
+                    const page = pageMatch ? Number(pageMatch[1]) : 0;
+                    let pages = 0;
+                    if (window.PDFViewerApplication && PDFViewerApplication.pagesCount) {
+                      pages = Number(PDFViewerApplication.pagesCount) || 0;
+                      const current = Number(PDFViewerApplication.page) || page || 0;
+                      return JSON.stringify({ page: current, pages });
+                    }
+                    return JSON.stringify({ page: page || 0, pages: 0 });
+                  } catch (e) {
+                    return JSON.stringify({ page: 0, pages: 0 });
+                  }
+                })()
+                """;
+            var raw = await ReaderView.CoreWebView2.ExecuteScriptAsync(script);
+            using var document = JsonDocument.Parse(raw);
+            var text = document.RootElement.ValueKind == JsonValueKind.String
+                ? document.RootElement.GetString()
+                : raw;
+            if (string.IsNullOrWhiteSpace(text))
+            {
+                return;
+            }
+
+            using var payload = JsonDocument.Parse(text);
+            if (payload.RootElement.TryGetProperty("page", out var pageElement) &&
+                pageElement.TryGetInt32(out var page) &&
+                page > 0)
+            {
+                _currentPage = page;
+            }
+
+            if (payload.RootElement.TryGetProperty("pages", out var pagesElement) &&
+                pagesElement.TryGetInt32(out var pages) &&
+                pages > 0)
+            {
+                _pageCount = pages;
+            }
+
+            UpdateReaderControls();
+        }
+        catch
+        {
+            // PDF location is best-effort only.
+        }
+    }
+
+    private async Task GoToDocumentBoundaryAsync(bool toEnd)
+    {
+        if (_session is null)
+        {
+            return;
+        }
+
+        if (IsComicSession)
+        {
+            var index = toEnd ? Math.Max(0, _session.ComicPages.Count - 1) : 0;
+            if (_comicReady)
+            {
+                _ = await _comicController.GoToPageAsync(index);
+            }
+            else
+            {
+                _session.CurrentSectionIndex = index;
+                await NavigateToCurrentSectionAsync();
+            }
+
+            return;
+        }
+
+        if (SupportsReaderRuntime)
+        {
+            try
+            {
+                await _readerController.RestoreProgressAsync(toEnd ? 1 : 0);
+                _sectionProgress = toEnd ? 1 : 0;
+                if (_pageCount > 0)
+                {
+                    _currentPage = toEnd ? _pageCount : 1;
+                }
+
+                UpdateReaderControls();
+            }
+            catch (InvalidOperationException)
+            {
+                // Runtime not ready.
+            }
+
+            return;
+        }
+
+        if (_session.Kind is ReaderDocumentKind.Pdf)
+        {
+            if (toEnd && _pageCount <= 0)
+            {
+                StatusText.Text = "暂时无法确定 PDF 总页数，请使用内置查看器跳到末页";
+                return;
+            }
+
+            await JumpFixedLayoutPageAsync(toEnd ? Math.Max(1, _pageCount) : 1);
+        }
+    }
+
     private async Task TurnPageOrMoveSectionAsync(int direction)
     {
         if (_session is null)
@@ -1509,7 +1850,12 @@ public partial class MainWindow : Window
 
             try
             {
-                _ = await _comicController.TurnAsync(direction);
+                var moved = await _comicController.TurnAsync(direction);
+                // Comic turn=false at last page means finish.
+                if (!moved && direction > 0)
+                {
+                    await CloseReaderAfterFinishAsync();
+                }
             }
             catch (InvalidOperationException)
             {
@@ -1532,14 +1878,82 @@ public partial class MainWindow : Window
                 {
                     return;
                 }
+
+                // Page did not move: either chapter boundary or document end.
+                if (direction > 0)
+                {
+                    if (_session.CurrentSectionIndex < _session.Sections.Count - 1)
+                    {
+                        await MoveSectionAsync(1);
+                        return;
+                    }
+
+                    // Last chapter + cannot move further => finished.
+                    await CloseReaderAfterFinishAsync();
+                    return;
+                }
+
+                if (direction < 0)
+                {
+                    if (_session.CurrentSectionIndex > 0)
+                    {
+                        await MoveSectionAsync(-1);
+                    }
+
+                    return;
+                }
             }
             catch (InvalidOperationException)
             {
                 return;
             }
+
+            return;
         }
 
-        await MoveSectionAsync(direction);
+        // PDF / image / other fixed layout.
+        if (direction > 0)
+        {
+            // Try page jump forward when we know page numbers.
+            if (_pageCount > 0 && _currentPage > 0 && _currentPage < _pageCount)
+            {
+                await JumpFixedLayoutPageAsync(_currentPage + 1);
+                return;
+            }
+
+            if (_session.Sections.Count > 1 &&
+                _session.CurrentSectionIndex < _session.Sections.Count - 1)
+            {
+                await MoveSectionAsync(1);
+                return;
+            }
+
+            // Only a known final page is enough evidence to finish a fixed-layout document.
+            // In particular, Edge's PDF viewer commonly reports no page count while loading;
+            // closing here would turn the first PageDown/Space press into "close reader".
+            if (_pageCount > 0 && _currentPage >= _pageCount)
+            {
+                await CloseReaderAfterFinishAsync();
+                return;
+            }
+
+            StatusText.Text = "页数尚未就绪，请使用文档内置翻页";
+            return;
+        }
+
+        if (direction < 0)
+        {
+            if (_pageCount > 0 && _currentPage > 1)
+            {
+                await JumpFixedLayoutPageAsync(_currentPage - 1);
+                return;
+            }
+
+            if (_session.Sections.Count > 1 && _session.CurrentSectionIndex > 0)
+            {
+                await MoveSectionAsync(-1);
+            }
+        }
     }
 
     private async Task MoveSectionAsync(int offset)
@@ -1555,6 +1969,11 @@ public partial class MainWindow : Window
             _session.Sections.Count - 1);
         if (nextIndex == _session.CurrentSectionIndex)
         {
+            if (offset > 0)
+            {
+                await CloseReaderAfterFinishAsync();
+            }
+
             return;
         }
 
@@ -1567,6 +1986,42 @@ public partial class MainWindow : Window
         await NavigateToCurrentSectionAsync();
         SaveReadingState();
         RefreshRecentItems();
+    }
+
+    private async Task CloseReaderAfterFinishAsync()
+    {
+        if (!_isReaderWindow)
+        {
+            StatusText.Text = UiStrings.ReachedEnd;
+            return;
+        }
+
+        StatusText.Text = UiStrings.FinishedClosing;
+
+        // Closing the last/active tab will shut down the whole reader window.
+        if (_activeReaderTab is not null)
+        {
+            await CloseReaderTabAsync(_activeReaderTab);
+            return;
+        }
+
+        if (_readerTabs.Count > 0)
+        {
+            await CloseReaderTabAsync(_readerTabs[^1]);
+            return;
+        }
+
+        await Dispatcher.InvokeAsync(() =>
+        {
+            try
+            {
+                Close();
+            }
+            catch
+            {
+                // ignore
+            }
+        });
     }
 
     private async void TocTree_SelectedItemChanged(object sender, RoutedPropertyChangedEventArgs<object> e)
@@ -1712,7 +2167,9 @@ public partial class MainWindow : Window
 
     private void ShowSearch()
     {
-        if (_session?.SupportsInPageSearch != true)
+        // EPUB/FB2/text: full-book index search. PDF/HTML: in-page find.
+        if (_session?.SupportsInPageSearch != true &&
+            _session?.Kind is not (ReaderDocumentKind.Pdf or ReaderDocumentKind.Html or ReaderDocumentKind.Image))
         {
             return;
         }
@@ -1737,7 +2194,19 @@ public partial class MainWindow : Window
     private async Task SearchWholeBookAsync()
     {
         var query = SearchBox.Text.Trim();
-        if (_session?.SupportsInPageSearch != true || string.IsNullOrEmpty(query) || !_webViewReady)
+        if (string.IsNullOrEmpty(query) || !_webViewReady || _session is null)
+        {
+            return;
+        }
+
+        // Fixed-layout documents: use WebView2 page find instead of FTS index.
+        if (_session.Kind is ReaderDocumentKind.Pdf or ReaderDocumentKind.Html or ReaderDocumentKind.Image)
+        {
+            await FindInPageAsync(query);
+            return;
+        }
+
+        if (_session.SupportsInPageSearch != true)
         {
             return;
         }
@@ -2002,6 +2471,238 @@ public partial class MainWindow : Window
         StatusText.Text = item.Value.Type == AnnotationType.Note
             ? "已打开这段文字的完整笔记"
             : "已选中这处高亮，可在右侧取消标记";
+    }
+
+    private async void ImportAnnotations_Click(object sender, RoutedEventArgs e)
+    {
+        var targetBook = _currentBook;
+        var database = _libraryDatabase;
+        if (targetBook is null || database is null)
+        {
+            return;
+        }
+
+        var targetBookId = targetBook.Id;
+        var targetBookTitle = targetBook.Title;
+
+        var dialog = new OpenFileDialog
+        {
+            Title = "导入批注 JSON",
+            Filter = "NoGaReader JSON 批注 (*.json)|*.json|所有文件|*.*",
+            CheckFileExists = true,
+            Multiselect = false
+        };
+        if (dialog.ShowDialog(this) != true)
+        {
+            return;
+        }
+
+        try
+        {
+            var json = await File.ReadAllTextAsync(dialog.FileName);
+            var document = _annotationExportService.ReadJsonDocument(json);
+            var imported = _annotationExportService.ToAnnotations(document, targetBookId);
+            if (imported.Count == 0)
+            {
+                StatusText.Text = "文件中没有可导入的批注";
+                return;
+            }
+
+            var existing = await database.ListAnnotationsAsync(targetBookId);
+            var existingKeys = new HashSet<string>(
+                existing.Select(GetAnnotationDedupeKey),
+                StringComparer.Ordinal);
+            var unique = imported
+                .Where(item => existingKeys.Add(GetAnnotationDedupeKey(item)))
+                .ToList();
+            var skipped = imported.Count - unique.Count;
+
+            if (unique.Count == 0)
+            {
+                StatusText.Text = skipped > 0
+                    ? $"没有新批注可导入（跳过 {skipped} 条重复）"
+                    : "文件中没有可导入的批注";
+                return;
+            }
+
+            var confirm = MessageBox.Show(
+                this,
+                $"将向《{targetBookTitle}》导入 {unique.Count} 条新批注" +
+                (skipped > 0 ? $"（跳过 {skipped} 条重复）" : string.Empty) +
+                "。\n\n导入只新增记录，不会覆盖现有批注。是否继续？",
+                "导入批注",
+                MessageBoxButton.YesNo,
+                MessageBoxImage.Question);
+            if (confirm != MessageBoxResult.Yes)
+            {
+                return;
+            }
+
+            await database.UpsertAnnotationsAsync(unique);
+            var saved = unique.Count;
+
+            if (_currentBook?.Id == targetBookId)
+            {
+                await RefreshAnnotationsAsync();
+                if (SupportsReaderRuntime && _webViewReady)
+                {
+                    await _readerController.ApplyAnnotationsAsync(GetCurrentSectionAnnotationsJson());
+                }
+            }
+
+            StatusText.Text = skipped > 0
+                ? $"已导入 {saved} 条批注，跳过 {skipped} 条重复"
+                : $"已导入 {saved} 条批注";
+        }
+        catch (Exception exception) when (
+            exception is IOException or UnauthorizedAccessException or InvalidDataException or JsonException or
+                InvalidOperationException or SqliteException or ArgumentException or FormatException or NotSupportedException)
+        {
+            StatusText.Text = "批注导入失败";
+            MessageBox.Show(this, exception.Message, "无法导入批注", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+    }
+
+    private async void EditLibraryBookMetadata_Click(object sender, RoutedEventArgs e)
+    {
+        if (_libraryDatabase is null)
+        {
+            return;
+        }
+
+        var book = ResolveLibraryBookFromSender(sender);
+        if (book is null)
+        {
+            return;
+        }
+
+        var titleDialog = new NoteDialog(
+            selectedText: $"当前书名：{book.Title}",
+            existingNote: book.Title,
+            color: "yellow",
+            isEditing: true)
+        {
+            Owner = this,
+            Title = "编辑书名"
+        };
+        if (titleDialog.ShowDialog() != true)
+        {
+            return;
+        }
+
+        var newTitle = titleDialog.NoteText.Trim();
+        if (string.IsNullOrWhiteSpace(newTitle))
+        {
+            StatusText.Text = "书名不能为空";
+            return;
+        }
+
+        var authorDialog = new NoteDialog(
+            selectedText: $"《{newTitle}》",
+            existingNote: book.Author ?? string.Empty,
+            color: "yellow",
+            isEditing: true)
+        {
+            Owner = this,
+            Title = "编辑作者"
+        };
+        if (authorDialog.ShowDialog() != true)
+        {
+            return;
+        }
+
+        book.Title = newTitle;
+        book.Author = string.IsNullOrWhiteSpace(authorDialog.NoteText)
+            ? null
+            : authorDialog.NoteText.Trim();
+        try
+        {
+            var saved = await _libraryDatabase.UpsertBookAsync(book);
+            if (_currentBook?.Id == saved.Id)
+            {
+                _currentBook = saved;
+                DocumentTitleText.Text = saved.Title;
+            }
+
+            await RefreshLibraryItemsAsync();
+            StatusText.Text = "已更新书名与作者";
+        }
+        catch (Exception exception)
+        {
+            MessageBox.Show(this, exception.Message, "无法更新元数据", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+    }
+
+    private async void EditLibraryBookTags_Click(object sender, RoutedEventArgs e)
+    {
+        if (_libraryDatabase is null)
+        {
+            return;
+        }
+
+        var book = ResolveLibraryBookFromSender(sender);
+        if (book is null)
+        {
+            return;
+        }
+
+        var dialog = new NoteDialog(
+            selectedText: "多个标签用逗号分隔，例如：经典,科幻,待读",
+            existingNote: book.Tags ?? string.Empty,
+            color: "yellow",
+            isEditing: true)
+        {
+            Owner = this,
+            Title = "编辑标签"
+        };
+        if (dialog.ShowDialog() != true)
+        {
+            return;
+        }
+
+        book.Tags = string.IsNullOrWhiteSpace(dialog.NoteText) ? string.Empty : dialog.NoteText.Trim();
+        try
+        {
+            var saved = await _libraryDatabase.UpsertBookAsync(book);
+            if (_currentBook?.Id == saved.Id)
+            {
+                _currentBook = saved;
+            }
+
+            await RefreshLibraryItemsAsync();
+            StatusText.Text = string.IsNullOrWhiteSpace(saved.Tags)
+                ? "已清除标签"
+                : $"已更新标签：{saved.Tags}";
+        }
+        catch (Exception exception)
+        {
+            MessageBox.Show(this, exception.Message, "无法更新标签", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+    }
+
+    private LibraryBook? ResolveLibraryBookFromSender(object sender)
+    {
+        if (sender is MenuItem { CommandParameter: LibraryBook menuBook })
+        {
+            return menuBook;
+        }
+
+        return LibraryList.SelectedItem as LibraryBook;
+    }
+
+    private static string GetAnnotationDedupeKey(Annotation annotation)
+    {
+        var quote = (annotation.SelectedText ?? annotation.Anchor?.ExactText ?? string.Empty).Trim();
+        var note = (annotation.Note ?? string.Empty).Trim();
+        var color = (annotation.Color ?? string.Empty).Trim().ToLowerInvariant();
+        return string.Join(
+            "|",
+            ((int)annotation.Type).ToString(),
+            annotation.SectionIndex.ToString(),
+            Math.Round(annotation.SectionProgress, 4).ToString("0.####"),
+            quote,
+            note,
+            color);
     }
 
     private async void ExportAnnotations_Click(object sender, RoutedEventArgs e)
@@ -2533,8 +3234,10 @@ public partial class MainWindow : Window
                     var saved = await _libraryDatabase.UpsertBookAsync(new LibraryBook
                     {
                         Path = item.Path,
-                        Title = item.Title,
-                        Author = string.IsNullOrWhiteSpace(item.Author) ? null : item.Author,
+                        Title = string.IsNullOrWhiteSpace(existing?.Title) ? item.Title : existing.Title,
+                        Author = existing is null
+                            ? string.IsNullOrWhiteSpace(item.Author) ? null : item.Author
+                            : existing.Author,
                         Format = item.Format,
                         CoverPath = coverPath,
                         FileSize = item.FileSize,
@@ -2542,7 +3245,8 @@ public partial class MainWindow : Window
                         AddedUtc = existing?.AddedUtc ?? DateTimeOffset.UtcNow,
                         LastOpenedUtc = existing?.LastOpenedUtc,
                         SectionCount = existing?.SectionCount ?? 1,
-                        IsMissing = false
+                        IsMissing = false,
+                        Tags = existing?.Tags
                     }, cancellationToken);
                     var knownIndex = knownBooks.FindIndex(candidate => candidate.Id == saved.Id);
                     if (knownIndex >= 0)
@@ -2690,8 +3394,8 @@ public partial class MainWindow : Window
             return await _libraryDatabase.UpsertBookAsync(new LibraryBook
             {
                 Path = session.SourcePath,
-                Title = session.Title,
-                Author = session.Author,
+                Title = string.IsNullOrWhiteSpace(existing?.Title) ? session.Title : existing.Title,
+                Author = existing is null ? session.Author : existing.Author,
                 Format = isDirectory ? "图片文件夹" : info.Extension.TrimStart('.').ToUpperInvariant(),
                 CoverPath = session.CoverImagePath ?? existing?.CoverPath,
                 FileSize = info.Exists ? info.Length : 0,
@@ -2701,7 +3405,8 @@ public partial class MainWindow : Window
                 AddedUtc = existing?.AddedUtc ?? DateTimeOffset.UtcNow,
                 LastOpenedUtc = DateTimeOffset.UtcNow,
                 SectionCount = session.Sections.Count,
-                IsMissing = !info.Exists && !isDirectory
+                IsMissing = !info.Exists && !isDirectory,
+                Tags = existing?.Tags
             }, cancellationToken);
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidOperationException or SqliteException)
@@ -2765,7 +3470,7 @@ public partial class MainWindow : Window
         }
         if (LibraryCountText is not null)
         {
-            LibraryCountText.Text = $"{_allLibraryBooks.Count:N0} 本本地书籍";
+            LibraryCountText.Text = UiStrings.BooksCount(_allLibraryBooks.Count);
         }
         UpdateWelcomeDashboard();
     }
@@ -2781,7 +3486,8 @@ public partial class MainWindow : Window
         var format = (LibraryFormatFilter?.SelectedItem as ComboBoxItem)?.Tag?.ToString() ?? string.Empty;
         return (string.IsNullOrEmpty(query) ||
                 book.Title.Contains(query, StringComparison.CurrentCultureIgnoreCase) ||
-                (book.Author?.Contains(query, StringComparison.CurrentCultureIgnoreCase) ?? false)) &&
+                (book.Author?.Contains(query, StringComparison.CurrentCultureIgnoreCase) ?? false) ||
+                (book.Tags?.Contains(query, StringComparison.CurrentCultureIgnoreCase) ?? false)) &&
                (string.IsNullOrEmpty(format) ||
                 format == "other" && book.Format is not ("EPUB" or "PDF") ||
                 string.Equals(book.Format, format, StringComparison.OrdinalIgnoreCase));
@@ -3063,43 +3769,6 @@ public partial class MainWindow : Window
         }
     }
 
-    private void RegisterFileAssociationsButton_Click(object sender, RoutedEventArgs e)
-    {
-        try
-        {
-            var exe = Environment.ProcessPath
-                       ?? Path.Combine(AppContext.BaseDirectory, "NoGaReader.exe");
-            FileAssociationService.RegisterCurrentUser(exe);
-            StatusText.Text = "已为当前用户注册文件关联";
-            MessageBox.Show(
-                this,
-                "已注册常见电子书、漫画与文档扩展名。\n可在 Windows“默认应用”中进一步确认。",
-                "文件关联",
-                MessageBoxButton.OK,
-                MessageBoxImage.Information);
-        }
-        catch (Exception exception)
-        {
-            MessageBox.Show(this, exception.Message, "注册失败", MessageBoxButton.OK, MessageBoxImage.Error);
-        }
-    }
-
-    private void UnregisterFileAssociationsButton_Click(object sender, RoutedEventArgs e)
-    {
-        try
-        {
-            FileAssociationService.UnregisterCurrentUser();
-            StatusText.Text = "已移除当前用户文件关联";
-            MessageBox.Show(this, "已移除 NoGaReader 的当前用户文件关联。", "文件关联",
-                MessageBoxButton.OK, MessageBoxImage.Information);
-        }
-        catch (Exception exception)
-        {
-            MessageBox.Show(this, exception.Message, "移除失败", MessageBoxButton.OK, MessageBoxImage.Error);
-        }
-    }
-
-
     private void SyncButton_Click(object sender, RoutedEventArgs e)
     {
         if (_syncDialog is { IsLoaded: true })
@@ -3374,9 +4043,148 @@ public partial class MainWindow : Window
         OnApplicationThemeChanged();
     }
 
+    private void UiLanguageButton_Checked(object sender, RoutedEventArgs e)
+    {
+        if (_initializing || sender is not ToggleButton { Tag: string value })
+        {
+            return;
+        }
+
+        SelectExclusiveToggle(value, LanguageSystemButton, LanguageZhButton, LanguageEnButton);
+        _settings.UiLanguage = value;
+        UiStrings.ApplyFromSettings(value);
+        ScheduleJsonSave();
+        ApplyLocalizedShellText();
+        StatusText.Text = UiStrings.LanguageUpdated;
+        UpdateReaderControls();
+    }
+
+    private void ApplyLocalizedShellText()
+    {
+        SetText(BrandSubtitleText, UiStrings.LocalReader);
+        SetText(ImportBookText, UiStrings.ImportBook);
+        SetText(ImportComicText, UiStrings.ImportComic);
+        SetText(ReadingSpaceLabel, UiStrings.ReadingSpace);
+        SetText(NavLibraryText, UiStrings.NavLibrary);
+        SetText(NavReadingText, UiStrings.NavReading);
+        SetText(NavRecentText, UiStrings.NavRecent);
+        SetText(NavConvertText, UiStrings.NavConvert);
+        SetText(NavDocumentsText, UiStrings.NavDocuments);
+        SetText(NavNotesText, UiStrings.NavNotes);
+        SetText(NavSettingsText, UiStrings.NavSettings);
+        SetText(SystemSectionLabel, UiStrings.SystemSection);
+        SetText(NavSyncText, UiStrings.CloudSync);
+
+        SetText(LibraryTitleText, UiStrings.Library);
+        SetText(LibrarySearchPlaceholder, UiStrings.SearchLibrary);
+        SetText(EmptyLibraryText, UiStrings.EmptyLibrary);
+        SetText(TocTitleText, UiStrings.Toc);
+        SetText(TocHintText, UiStrings.CurrentChapters);
+        SetText(NoTocText, UiStrings.EmptyToc);
+        SetText(RecentTitleText, UiStrings.Recent);
+        SetText(RecentHintText, UiStrings.RecentHint);
+        SetText(EmptyRecentText, UiStrings.EmptyRecent);
+        // Force list rebinding so ProgressText/LastOpenedText re-evaluate under new language.
+        RefreshRecentItems();
+
+        SetText(AppAppearanceLabel, UiStrings.AppAppearance);
+        SetText(UiLanguageLabel, UiStrings.UiLanguage);
+        SetText(LocalOnlyLabel, UiStrings.LocalOnly);
+        LanguageSystemButton.Content = UiStrings.LangSystem;
+        LanguageZhButton.Content = UiStrings.LangChinese;
+        LanguageEnButton.Content = UiStrings.LangEnglish;
+
+        SystemThemeButton.ToolTip = UiStrings.ThemeSystem;
+        LightThemeButton.ToolTip = UiStrings.ThemeLight;
+        DarkThemeButton.ToolTip = UiStrings.ThemeDark;
+
+        PreviousChapterButton.ToolTip = UiStrings.PreviousChapter;
+        NextChapterButton.ToolTip = UiStrings.NextChapter;
+        PreviousButton.ToolTip = UiStrings.PreviousPage;
+        NextButton.ToolTip = UiStrings.NextPage;
+        PageJumpButton.ToolTip = UiStrings.JumpPage;
+        SearchToggleButton.ToolTip = UiStrings.SearchBook;
+        HighlightButton.ToolTip = UiStrings.Highlight;
+        NoteButton.ToolTip = UiStrings.AddNote;
+        BookmarkButton.ToolTip = UiStrings.Bookmark;
+        AnnotationsButton.ToolTip = UiStrings.NotesPanel;
+        ComicModeButton.ToolTip = UiStrings.ComicMode;
+        ReaderSettingsButton.ToolTip = UiStrings.ReaderSettings;
+        SearchActionButton.Content = UiStrings.Search;
+
+        SetText(WelcomeBackText, UiStrings.WelcomeBack);
+        SetText(WelcomePromptText, UiStrings.WelcomePrompt);
+        SetText(WelcomeHintText, UiStrings.WelcomeHint);
+        SetText(WelcomeTotalReadingLabel, UiStrings.TotalReading);
+        SetText(WelcomeLocalBooksLabel, UiStrings.LocalBooks);
+        SetText(WelcomeReadingDaysLabel, UiStrings.ReadingDays);
+        SetText(ContinueReadingLabel, UiStrings.ContinueReading);
+        SetText(StartReadingText, UiStrings.StartReading);
+        SetText(StartReadingHintText, UiStrings.StartReadingHint);
+        SetText(ShortcutHintText, UiStrings.ShortcutHint);
+        if (WelcomeSelectFileButton is not null)
+        {
+            WelcomeSelectFileButton.Content = UiStrings.IsEnglish ? "Choose file" : "选择文件";
+        }
+
+        if (WelcomeOpenComicFolderButton is not null)
+        {
+            WelcomeOpenComicFolderButton.Content = UiStrings.IsEnglish ? "Image folder" : "图片文件夹";
+        }
+
+        SetText(ReaderSettingsTitleText, UiStrings.ReaderSettings);
+        SetText(ReadingBackgroundLabel, UiStrings.ReadingBackground);
+        SetText(ReadingModeLabel, UiStrings.ReadingMode);
+        SetText(FontSizeLabel, UiStrings.FontSize);
+        SetText(LineHeightLabel, UiStrings.LineHeight);
+        SetText(ContentWidthLabel, UiStrings.ContentWidth);
+        SetText(ReaderThemeHintText, UiStrings.ReaderThemeHint);
+        SetText(NotesTitleText, UiStrings.NotesTitle);
+        SetText(NotesHintText, UiStrings.NotesHint);
+        if (ImportAnnotationsButton is not null)
+        {
+            ImportAnnotationsButton.ToolTip = UiStrings.ImportAnnotations;
+        }
+
+        if (CurrentSectionText is not null &&
+            (CurrentSectionText.Text is "本地阅读器" or "Local reader"))
+        {
+            CurrentSectionText.Text = UiStrings.LocalReaderSubtitle;
+        }
+
+        if (StatusText is not null)
+        {
+            StatusText.Text = UiStrings.Ready;
+        }
+
+        if (LibraryCountText is not null)
+        {
+            LibraryCountText.Text = UiStrings.BooksCount(_allLibraryBooks.Count);
+        }
+
+        if (!_isReaderWindow)
+        {
+            Title = UiStrings.ConsoleTitle;
+        }
+        else if (_session is null)
+        {
+            Title = UiStrings.ReaderTitle;
+        }
+
+        UpdateWelcomeDashboard();
+    }
+
+    private static void SetText(TextBlock? block, string value)
+    {
+        if (block is not null)
+        {
+            block.Text = value;
+        }
+    }
+
     private void AppThemeButton_Checked(object sender, RoutedEventArgs e)
     {
-        if (_initializing || sender is not ToggleButton { IsChecked: true, Tag: string value } selected ||
+        if (sender is not ToggleButton { Tag: string value } ||
             !Enum.TryParse<AppThemeMode>(value, out var mode))
         {
             return;
@@ -3406,7 +4214,6 @@ public partial class MainWindow : Window
         {
             ScheduleReaderAppearanceUpdate();
         }
-        selected.Focus();
     }
 
     private void ReaderThemeButton_Checked(object sender, RoutedEventArgs e)
@@ -3772,8 +4579,8 @@ public partial class MainWindow : Window
             TitleBarRow.Height = new GridLength(40);
             TopBar.Visibility = Visibility.Visible;
             StatusBar.Visibility = Visibility.Visible;
-            TopBarRow.Height = new GridLength(72);
-            StatusBarRow.Height = new GridLength(40);
+            TopBarRow.Height = new GridLength(64);
+            StatusBarRow.Height = new GridLength(36);
             SetSidebarVisible(_sidebarVisibleBeforeFullScreen);
             _isFullScreen = false;
             UpdateCaptionMaxGlyph();
@@ -3791,7 +4598,9 @@ public partial class MainWindow : Window
             return;
         }
 
-        if (Keyboard.Modifiers.HasFlag(ModifierKeys.Control) && e.Key == Key.F && _session?.SupportsInPageSearch == true)
+        if (Keyboard.Modifiers.HasFlag(ModifierKeys.Control) && e.Key == Key.F &&
+            (_session?.SupportsInPageSearch == true ||
+             _session?.Kind is ReaderDocumentKind.Pdf or ReaderDocumentKind.Html or ReaderDocumentKind.Image))
         {
             e.Handled = true;
             ShowSearch();
@@ -3812,18 +4621,64 @@ public partial class MainWindow : Window
             return;
         }
 
+        var deferFixedLayoutNavigation =
+            _session is { } session &&
+            !SupportsReaderRuntime &&
+            !IsComicSession &&
+            _pageCount <= 0 &&
+            session.Sections.Count <= 1 &&
+            session.Kind is ReaderDocumentKind.Pdf or ReaderDocumentKind.Image or ReaderDocumentKind.Html;
+
         switch (e.Key)
         {
-            case Key.Left when !SearchBox.IsKeyboardFocusWithin:
-            case Key.PageUp when !SearchBox.IsKeyboardFocusWithin:
+            case Key.Left when !deferFixedLayoutNavigation && !SearchBox.IsKeyboardFocusWithin && !PageJumpBox.IsKeyboardFocusWithin:
+            case Key.PageUp when !deferFixedLayoutNavigation && !SearchBox.IsKeyboardFocusWithin && !PageJumpBox.IsKeyboardFocusWithin:
                 e.Handled = true;
                 await TurnPageOrMoveSectionAsync(IsComicRightToLeft ? 1 : -1);
                 break;
-            case Key.Right when !SearchBox.IsKeyboardFocusWithin:
-            case Key.PageDown when !SearchBox.IsKeyboardFocusWithin:
-            case Key.Space when !SearchBox.IsKeyboardFocusWithin:
+            case Key.Right when !deferFixedLayoutNavigation && !SearchBox.IsKeyboardFocusWithin && !PageJumpBox.IsKeyboardFocusWithin:
+            case Key.PageDown when !deferFixedLayoutNavigation && !SearchBox.IsKeyboardFocusWithin && !PageJumpBox.IsKeyboardFocusWithin:
+            case Key.Space when !deferFixedLayoutNavigation && !SearchBox.IsKeyboardFocusWithin && !PageJumpBox.IsKeyboardFocusWithin:
                 e.Handled = true;
                 await TurnPageOrMoveSectionAsync(IsComicRightToLeft ? -1 : 1);
+                break;
+            case Key.Home when !deferFixedLayoutNavigation && !SearchBox.IsKeyboardFocusWithin && !PageJumpBox.IsKeyboardFocusWithin:
+                e.Handled = true;
+                await GoToDocumentBoundaryAsync(toEnd: false);
+                break;
+            case Key.End when !deferFixedLayoutNavigation && !SearchBox.IsKeyboardFocusWithin && !PageJumpBox.IsKeyboardFocusWithin:
+                e.Handled = true;
+                await GoToDocumentBoundaryAsync(toEnd: true);
+                break;
+            case Key.G when Keyboard.Modifiers.HasFlag(ModifierKeys.Control) && !SearchBox.IsKeyboardFocusWithin:
+                e.Handled = true;
+                PageJumpBox.Focus();
+                PageJumpBox.SelectAll();
+                break;
+            case Key.D0 when Keyboard.Modifiers.HasFlag(ModifierKeys.Control) &&
+                             _session?.Kind is ReaderDocumentKind.Pdf or ReaderDocumentKind.Image:
+                e.Handled = true;
+                _zoomFactor = 1.0;
+                if (_webViewReady)
+                {
+                    ReaderView.ZoomFactor = _zoomFactor;
+                }
+                UpdateReaderControls();
+                SaveReadingState();
+                StatusText.Text = "已恢复 100% 缩放";
+                break;
+            case Key.D1 when Keyboard.Modifiers.HasFlag(ModifierKeys.Control) &&
+                             _session?.Kind is ReaderDocumentKind.Pdf or ReaderDocumentKind.Image:
+                e.Handled = true;
+                // Approximate "fit width" for fixed-layout viewers.
+                _zoomFactor = 1.15;
+                if (_webViewReady)
+                {
+                    ReaderView.ZoomFactor = _zoomFactor;
+                }
+                UpdateReaderControls();
+                SaveReadingState();
+                StatusText.Text = "已切换到适合宽度（近似）";
                 break;
             case Key.F11:
                 e.Handled = true;
@@ -3890,13 +4745,61 @@ public partial class MainWindow : Window
         System.Windows.Automation.AutomationProperties.SetName(
             PageNextButton,
             IsComicRightToLeft ? "右侧翻到上一页" : "右侧翻到下一页");
-        SearchToggleButton.IsEnabled = _session?.SupportsInPageSearch == true;
+
+        var sectionCount = _session?.Sections.Count ?? 0;
+        var multiSection = hasSession && sectionCount > 1 && !IsComicSession &&
+                           _session!.Kind is not (ReaderDocumentKind.Pdf or ReaderDocumentKind.Image or ReaderDocumentKind.Html);
+        var currentSectionIndex = _session?.CurrentSectionIndex ?? 0;
+        var canPreviousChapter = multiSection && currentSectionIndex > 0;
+        var canNextChapter = multiSection && currentSectionIndex < sectionCount - 1;
+        PreviousChapterButton.Visibility = multiSection ? Visibility.Visible : Visibility.Collapsed;
+        NextChapterButton.Visibility = multiSection ? Visibility.Visible : Visibility.Collapsed;
+        PreviousChapterButton.IsEnabled = canPreviousChapter;
+        NextChapterButton.IsEnabled = canNextChapter;
+        PreviousChapterButton.Opacity = canPreviousChapter ? 1 : 0.35;
+        NextChapterButton.Opacity = canNextChapter ? 1 : 0.35;
+
+        var canJumpPage = hasSession && (
+            IsComicSession ||
+            SupportsReaderRuntime ||
+            _session!.Kind is ReaderDocumentKind.Pdf or ReaderDocumentKind.Image ||
+            sectionCount > 1);
+        PageJumpBox.IsEnabled = canJumpPage;
+        PageJumpButton.IsEnabled = canJumpPage;
+        PageJumpBox.Visibility = canJumpPage ? Visibility.Visible : Visibility.Collapsed;
+        PageJumpButton.Visibility = canJumpPage ? Visibility.Visible : Visibility.Collapsed;
+        if (canJumpPage)
+        {
+            if (IsComicSession)
+            {
+                PageJumpBox.Text = Math.Max(1, _currentPage).ToString();
+                PageJumpBox.ToolTip = "跳转到漫画页码";
+            }
+            else if (_pageCount > 0)
+            {
+                PageJumpBox.Text = Math.Max(1, _currentPage).ToString();
+                PageJumpBox.ToolTip = "跳转到本章页码";
+            }
+            else if (sectionCount > 1)
+            {
+                PageJumpBox.Text = (currentSectionIndex + 1).ToString();
+                PageJumpBox.ToolTip = "跳转到章节序号";
+            }
+            else if (_session!.Kind == ReaderDocumentKind.Pdf)
+            {
+                PageJumpBox.ToolTip = "跳转到 PDF 页码";
+            }
+        }
+
+        var canSearch = _session?.SupportsInPageSearch == true ||
+                        _session?.Kind is ReaderDocumentKind.Pdf or ReaderDocumentKind.Html or ReaderDocumentKind.Image;
+        SearchToggleButton.IsEnabled = canSearch;
         if (TocToggleButton is not null)
         {
             TocToggleButton.IsEnabled = _session is not null && !IsComicSession;
             TocToggleButton.Visibility = _isReaderWindow ? Visibility.Visible : Visibility.Collapsed;
         }
-        SearchActionButton.IsEnabled = _session?.SupportsInPageSearch == true;
+        SearchActionButton.IsEnabled = canSearch;
         ReaderSettingsButton.IsEnabled = SupportsReaderRuntime;
         ComicModeButton.Visibility = IsComicSession ? Visibility.Visible : Visibility.Collapsed;
         ComicModeButton.IsEnabled = IsComicSession;
@@ -3933,17 +4836,27 @@ public partial class MainWindow : Window
         {
             ProgressText.Text = $"{wholeBookProgress:P0}  ·  {_currentPage} / {_pageCount} 页  ·  {_settings.ComicScale:P0}";
         }
+        else if (_pageCount > 0 && _session.Sections.Count > 1)
+        {
+            ProgressText.Text = $"{wholeBookProgress:P0}  ·  章 {_session.CurrentSectionIndex + 1}/{_session.Sections.Count}  ·  页 {_currentPage}/{_pageCount}";
+        }
         else if (_pageCount > 0)
         {
-            ProgressText.Text = $"{wholeBookProgress:P0}  ·  本章 {_currentPage} / {_pageCount}";
+            ProgressText.Text = $"{wholeBookProgress:P0}  ·  页 {_currentPage} / {_pageCount}";
         }
         else if (_session.Sections.Count > 1)
         {
-            ProgressText.Text = $"{wholeBookProgress:P0}  ·  章节 {_session.CurrentSectionIndex + 1} / {_session.Sections.Count}";
+            ProgressText.Text = $"{wholeBookProgress:P0}  ·  章 {_session.CurrentSectionIndex + 1} / {_session.Sections.Count}";
         }
         else if (_session.IsReflowable)
         {
             ProgressText.Text = $"{wholeBookProgress:P0}";
+        }
+        else if (_session.Kind == ReaderDocumentKind.Pdf)
+        {
+            ProgressText.Text = _currentPage > 0
+                ? $"PDF · 第 {_currentPage} 页  ·  缩放 {_zoomFactor:P0}"
+                : $"PDF · 缩放 {_zoomFactor:P0}";
         }
         else
         {
@@ -3985,7 +4898,16 @@ public partial class MainWindow : Window
             _recentItems.Add(item);
         }
 
-        NoRecentPanel.Visibility = _recentItems.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
+        if (NoRecentPanel is not null)
+        {
+            NoRecentPanel.Visibility = _recentItems.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
+        }
+
+        // Refresh bound list so language-dependent display strings update immediately.
+        if (RecentList is not null)
+        {
+            RecentList.Items.Refresh();
+        }
         UpdateWelcomeDashboard();
     }
 
@@ -3998,10 +4920,12 @@ public partial class MainWindow : Window
 
         var totalMinutes = Math.Max(0, (int)Math.Floor(_settings.TotalReadingSeconds / 60));
         WelcomeReadingTimeText.Text = totalMinutes < 60
-            ? $"{totalMinutes} 分钟"
-            : $"{totalMinutes / 60} 小时 {totalMinutes % 60} 分";
-        WelcomeBookCountText.Text = $"{_allLibraryBooks.Count:N0} 本";
-        WelcomeReadingDaysText.Text = $"{_settings.ReadingDates.Count:N0} 天";
+            ? UiStrings.Minutes(totalMinutes)
+            : (UiStrings.IsEnglish
+                ? $"{totalMinutes / 60}h {totalMinutes % 60}m"
+                : $"{totalMinutes / 60} 小时 {totalMinutes % 60} 分");
+        WelcomeBookCountText.Text = UiStrings.BooksShort(_allLibraryBooks.Count);
+        WelcomeReadingDaysText.Text = UiStrings.Days(_settings.ReadingDates.Count);
 
         var recent = _recentItems.FirstOrDefault(item => File.Exists(item.Path) || Directory.Exists(item.Path));
         WelcomeRecentCard.Visibility = recent is null ? Visibility.Collapsed : Visibility.Visible;
@@ -4271,15 +5195,17 @@ public partial class MainWindow : Window
 
     private void ScheduleJsonSave()
     {
+        var revision = _settingsStore.ReserveSaveRevision();
         var snapshot = CloneSettings(_settings);
         _jsonSaveCancellation?.Cancel();
         _jsonSaveCancellation?.Dispose();
         _jsonSaveCancellation = new CancellationTokenSource();
-        _jsonSaveTask = PersistJsonAfterDelayAsync(snapshot, _jsonSaveCancellation.Token);
+        _jsonSaveTask = PersistJsonAfterDelayAsync(snapshot, revision, _jsonSaveCancellation.Token);
     }
 
     private async Task PersistJsonAfterDelayAsync(
         AppSettings settingsSnapshot,
+        long revision,
         CancellationToken cancellationToken)
     {
         try
@@ -4291,7 +5217,7 @@ public partial class MainWindow : Window
                 await Task.Run(() =>
                 {
                     _recentStore.Flush();
-                    _settingsStore.Save(settingsSnapshot);
+                    _settingsStore.Save(settingsSnapshot, revision);
                 }).ConfigureAwait(false);
             }
             finally
@@ -4356,7 +5282,9 @@ public partial class MainWindow : Window
         SyncFolderPath = source.SyncFolderPath,
         SyncIncludeAnnotations = source.SyncIncludeAnnotations,
         SyncIncludeSettings = source.SyncIncludeSettings,
-        LastSyncUtc = source.LastSyncUtc
+        LastSyncUtc = source.LastSyncUtc,
+        SyncSettingsModifiedUtc = source.SyncSettingsModifiedUtc,
+        UiLanguage = source.UiLanguage
     };
 
     private void SetLoading(bool loading, string? message = null)

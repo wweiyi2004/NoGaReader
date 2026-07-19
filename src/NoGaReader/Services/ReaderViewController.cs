@@ -105,6 +105,13 @@ internal sealed class ReaderViewController(WebView2 view)
             "window.__nogareader ? window.__nogareader.clearSelection() : null");
     }
 
+    public async Task RestoreProgressAsync(double progress)
+    {
+        progress = Math.Clamp(progress, 0, 1);
+        _ = await ExecuteAsync(
+            $"window.__nogareader ? window.__nogareader.restore({progress.ToString(System.Globalization.CultureInfo.InvariantCulture)}) : null");
+    }
+
     public async Task ApplyThemeColorsAsync(
         string background,
         string foreground,

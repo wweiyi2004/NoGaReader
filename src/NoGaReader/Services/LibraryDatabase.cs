@@ -11,7 +11,7 @@ namespace NoGaReader.Services;
 /// </summary>
 public sealed class LibraryDatabase
 {
-    private const int CurrentSchemaVersion = 3;
+    private const int CurrentSchemaVersion = 4;
     private const int MaxSearchQueryLength = 512;
     private const int MaxSearchResultCount = 200;
     private const int MaxFtsCandidateSections = 1000;
@@ -19,7 +19,7 @@ public sealed class LibraryDatabase
     private const int SearchSnippetRadius = 64;
     private const string BookColumns =
         "id, source_path, title, author, format, cover_path, file_size, " +
-        "file_modified_utc, added_utc, last_opened_utc, section_count, is_missing";
+        "file_modified_utc, added_utc, last_opened_utc, section_count, is_missing, tags";
 
     private static readonly SemaphoreSlim MigrationGate = new(1, 1);
     private readonly string _connectionString;
@@ -104,6 +104,11 @@ public sealed class LibraryDatabase
                 await MigrateToVersion3Async(connection, cancellationToken).ConfigureAwait(false);
             }
 
+            if (version < 4)
+            {
+                await MigrateToVersion4Async(connection, cancellationToken).ConfigureAwait(false);
+            }
+
             await EnsureFtsAsync(connection, cancellationToken).ConfigureAwait(false);
             _initialized = true;
         }
@@ -138,10 +143,10 @@ public sealed class LibraryDatabase
                 """
                 INSERT INTO library_books (
                     source_path, path_key, title, author, format, cover_path, file_size,
-                    file_modified_utc, added_utc, last_opened_utc, section_count, is_missing)
+                    file_modified_utc, added_utc, last_opened_utc, section_count, is_missing, tags)
                 VALUES (
                     $sourcePath, $pathKey, $title, $author, $format, $coverPath, $fileSize,
-                    $fileModifiedUtc, $addedUtc, $lastOpenedUtc, $sectionCount, $isMissing)
+                    $fileModifiedUtc, $addedUtc, $lastOpenedUtc, $sectionCount, $isMissing, $tags)
                 ON CONFLICT(path_key) DO UPDATE SET
                     source_path = excluded.source_path,
                     title = excluded.title,
@@ -152,7 +157,11 @@ public sealed class LibraryDatabase
                     file_modified_utc = excluded.file_modified_utc,
                     last_opened_utc = excluded.last_opened_utc,
                     section_count = excluded.section_count,
-                    is_missing = excluded.is_missing;
+                    is_missing = excluded.is_missing,
+                    tags = CASE
+                        WHEN $tagsSpecified = 1 THEN excluded.tags
+                        ELSE library_books.tags
+                    END;
                 """;
             command.Parameters.AddWithValue("$sourcePath", sourcePath);
             command.Parameters.AddWithValue("$pathKey", pathKey);
@@ -166,6 +175,8 @@ public sealed class LibraryDatabase
             command.Parameters.AddWithValue("$lastOpenedUtc", DbTimestamp(book.LastOpenedUtc));
             command.Parameters.AddWithValue("$sectionCount", Math.Max(1, book.SectionCount));
             command.Parameters.AddWithValue("$isMissing", book.IsMissing ? 1 : 0);
+            command.Parameters.AddWithValue("$tags", DbValue(NormalizeTags(book.Tags)));
+            command.Parameters.AddWithValue("$tagsSpecified", book.Tags is null ? 0 : 1);
             await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
         }
 
@@ -211,15 +222,15 @@ public sealed class LibraryDatabase
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
             var book = ReadBook(reader);
-            if (!reader.IsDBNull(12))
+            if (!reader.IsDBNull(13))
             {
                 book.Location = new ReaderLocation
                 {
                     BookId = book.Id,
-                    SectionIndex = reader.GetInt32(12),
-                    SectionProgress = reader.GetDouble(13),
-                    DocumentProgress = reader.GetDouble(14),
-                    UpdatedUtc = FromTimestamp(reader.GetInt64(15))
+                    SectionIndex = reader.GetInt32(13),
+                    SectionProgress = reader.GetDouble(14),
+                    DocumentProgress = reader.GetDouble(15),
+                    UpdatedUtc = FromTimestamp(reader.GetInt64(16))
                 };
             }
             books.Add(book);
@@ -548,31 +559,34 @@ public sealed class LibraryDatabase
         Annotation annotation,
         CancellationToken cancellationToken = default)
     {
-        ArgumentNullException.ThrowIfNull(annotation);
-        if (annotation.BookId <= 0)
+        await UpsertAnnotationsAsync([annotation], cancellationToken).ConfigureAwait(false);
+
+        return await FindAnnotationAsync(annotation.Id, cancellationToken).ConfigureAwait(false)
+            ?? throw new InvalidOperationException("保存批注后无法读取数据库记录。");
+    }
+
+    public async Task UpsertAnnotationsAsync(
+        IEnumerable<Annotation> annotations,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(annotations);
+        var batch = annotations.ToList();
+        if (batch.Count == 0)
         {
-            throw new ArgumentOutOfRangeException(nameof(annotation), "批注必须关联书籍。");
+            return;
         }
 
-        if (!Enum.IsDefined(annotation.Type))
-        {
-            throw new ArgumentOutOfRangeException(nameof(annotation), "批注类型无效。");
-        }
-
-        annotation.Id = string.IsNullOrWhiteSpace(annotation.Id)
-            ? Guid.NewGuid().ToString("N")
-            : annotation.Id.Trim();
-        annotation.SectionIndex = Math.Max(0, annotation.SectionIndex);
-        annotation.SectionProgress = Math.Clamp(annotation.SectionProgress, 0, 1);
         var now = DateTimeOffset.UtcNow;
-        annotation.CreatedUtc = annotation.CreatedUtc == default ? now : annotation.CreatedUtc;
-        annotation.ModifiedUtc = annotation.ModifiedUtc == default ? now : annotation.ModifiedUtc;
+        foreach (var annotation in batch)
+        {
+            PrepareAnnotationForUpsert(annotation, now);
+        }
 
         await using var connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
         await using var transaction = connection.BeginTransaction();
-        await using var command = connection.CreateCommand();
-        command.Transaction = transaction;
-        command.CommandText =
+        await using var upsert = connection.CreateCommand();
+        upsert.Transaction = transaction;
+        upsert.CommandText =
             """
             INSERT INTO annotations (
                 id, book_id, annotation_type, section_index, section_key,
@@ -592,21 +606,24 @@ public sealed class LibraryDatabase
                 color = excluded.color,
                 updated_utc = excluded.updated_utc;
             """;
-        AddAnnotationParameters(command, annotation);
-        await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
 
-        await using (var clearTombstone = connection.CreateCommand())
+        await using var clearTombstone = connection.CreateCommand();
+        clearTombstone.Transaction = transaction;
+        clearTombstone.CommandText = "DELETE FROM annotation_tombstones WHERE annotation_id = $id;";
+        var tombstoneId = clearTombstone.Parameters.Add("$id", SqliteType.Text);
+
+        foreach (var annotation in batch)
         {
-            clearTombstone.Transaction = transaction;
-            clearTombstone.CommandText = "DELETE FROM annotation_tombstones WHERE annotation_id = $id;";
-            clearTombstone.Parameters.AddWithValue("$id", annotation.Id);
+            cancellationToken.ThrowIfCancellationRequested();
+            upsert.Parameters.Clear();
+            AddAnnotationParameters(upsert, annotation);
+            await upsert.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+
+            tombstoneId.Value = annotation.Id;
             await clearTombstone.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
         }
 
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
-
-        return await FindAnnotationAsync(annotation.Id, cancellationToken).ConfigureAwait(false)
-            ?? throw new InvalidOperationException("保存批注后无法读取数据库记录。");
     }
 
     public async Task<Annotation?> FindAnnotationAsync(
@@ -1315,6 +1332,23 @@ public sealed class LibraryDatabase
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
     }
 
+    private static async Task MigrateToVersion4Async(
+        SqliteConnection connection,
+        CancellationToken cancellationToken)
+    {
+        await using var transaction = connection.BeginTransaction();
+        await using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText =
+            """
+            ALTER TABLE library_books ADD COLUMN tags TEXT;
+
+            PRAGMA user_version = 4;
+            """;
+        await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+    }
+
     private async Task EnsureFtsAsync(SqliteConnection connection, CancellationToken cancellationToken)
     {
         try
@@ -1440,6 +1474,28 @@ public sealed class LibraryDatabase
         command.Parameters.AddWithValue("$updatedUtc", ToTimestamp(annotation.ModifiedUtc));
     }
 
+    private static void PrepareAnnotationForUpsert(Annotation annotation, DateTimeOffset now)
+    {
+        ArgumentNullException.ThrowIfNull(annotation);
+        if (annotation.BookId <= 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(annotation), "批注必须关联书籍。");
+        }
+
+        if (!Enum.IsDefined(annotation.Type))
+        {
+            throw new ArgumentOutOfRangeException(nameof(annotation), "批注类型无效。");
+        }
+
+        annotation.Id = string.IsNullOrWhiteSpace(annotation.Id)
+            ? Guid.NewGuid().ToString("N")
+            : annotation.Id.Trim();
+        annotation.SectionIndex = Math.Max(0, annotation.SectionIndex);
+        annotation.SectionProgress = Math.Clamp(annotation.SectionProgress, 0, 1);
+        annotation.CreatedUtc = annotation.CreatedUtc == default ? now : annotation.CreatedUtc;
+        annotation.ModifiedUtc = annotation.ModifiedUtc == default ? now : annotation.ModifiedUtc;
+    }
+
     private static LibraryBook ReadBook(SqliteDataReader reader)
     {
         return new LibraryBook
@@ -1455,8 +1511,25 @@ public sealed class LibraryDatabase
             AddedUtc = FromTimestamp(reader.GetInt64(8)),
             LastOpenedUtc = GetNullableTimestamp(reader, 9),
             SectionCount = reader.GetInt32(10),
-            IsMissing = reader.GetInt32(11) != 0
+            IsMissing = reader.GetInt32(11) != 0,
+            Tags = reader.FieldCount > 12 ? GetNullableString(reader, 12) : null
         };
+    }
+
+    private static string? NormalizeTags(string? tags)
+    {
+        if (string.IsNullOrWhiteSpace(tags))
+        {
+            return null;
+        }
+
+        var parts = tags
+            .Split([',', '，', ';', '；'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Where(part => part.Length > 0)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Take(20)
+            .ToArray();
+        return parts.Length == 0 ? null : string.Join(",", parts);
     }
 
     private static Annotation ReadAnnotation(SqliteDataReader reader)

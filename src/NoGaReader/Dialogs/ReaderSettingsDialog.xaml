@@ -128,10 +128,14 @@
                 <TextBlock VerticalAlignment="Center" FontSize="12"
                            Foreground="{DynamicResource MutedTextBrush}"
                            Text="Esc 关闭"/>
-                <Button Content="完成" Width="108" Height="42" HorizontalAlignment="Right"
+                <Button Width="108" Height="42" HorizontalAlignment="Right"
                         Style="{StaticResource PrimaryButtonStyle}"
                         Click="CloseButton_Click"
-                        AutomationProperties.Name="完成阅读设置"/>
+                        AutomationProperties.Name="完成阅读设置">
+                    <TextBlock Text="完成"
+                               FontWeight="SemiBold"
+                               Foreground="{DynamicResource PrimaryContrastBrush}"/>
+                </Button>
             </Grid>
         </Grid>
     </Border>

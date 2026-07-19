@@ -79,6 +79,8 @@ public sealed class SyncAnnotationState
 
 public sealed class SyncSettingsSnapshot
 {
+    public DateTimeOffset UpdatedAt { get; set; } = DateTimeOffset.MinValue;
+
     public string Theme { get; set; } = "System";
 
     public string ReaderTheme { get; set; } = "Auto";
@@ -102,6 +104,8 @@ public sealed class SyncSettingsSnapshot
     public bool ComicCoverSinglePage { get; set; } = true;
 
     public double ComicScale { get; set; } = 1.0;
+
+    public string UiLanguage { get; set; } = string.Empty;
 }
 
 public sealed class SyncResult

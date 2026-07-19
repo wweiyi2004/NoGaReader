@@ -26,6 +26,8 @@ public partial class DocumentEditorDialog : Window
         {
             OpenPath(initialPath);
         }
+
+        Loaded += (_, _) => App.ApplyWindowChromeTheme(this);
     }
 
     public string? FilePath => _filePath;
@@ -230,6 +232,124 @@ public partial class DocumentEditorDialog : Window
         }
 
         return false;
+    }
+
+    private void InsertImageButton_Click(object sender, RoutedEventArgs e)
+    {
+        var dialog = new OpenFileDialog
+        {
+            Title = "插入图片",
+            Filter = "图片|*.png;*.jpg;*.jpeg;*.bmp;*.gif;*.webp|所有文件|*.*",
+            CheckFileExists = true
+        };
+        if (dialog.ShowDialog(this) != true)
+        {
+            return;
+        }
+
+        try
+        {
+            var bitmap = new System.Windows.Media.Imaging.BitmapImage();
+            bitmap.BeginInit();
+            bitmap.CacheOption = System.Windows.Media.Imaging.BitmapCacheOption.OnLoad;
+            bitmap.UriSource = new Uri(dialog.FileName, UriKind.Absolute);
+            bitmap.EndInit();
+            bitmap.Freeze();
+
+            var image = new System.Windows.Controls.Image
+            {
+                Source = bitmap,
+                Stretch = Stretch.Uniform,
+                MaxWidth = 640,
+                MaxHeight = 480
+            };
+            var container = new InlineUIContainer(image, Editor.CaretPosition ?? Editor.Document.ContentEnd);
+            Editor.CaretPosition = container.ElementEnd;
+            MarkDirty();
+            StatusText.Text = $"已插入图片 {Path.GetFileName(dialog.FileName)}";
+        }
+        catch (Exception exception)
+        {
+            MessageBox.Show(this, exception.Message, "无法插入图片", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+    }
+
+    private void InsertTableButton_Click(object sender, RoutedEventArgs e)
+    {
+        var table = new Table
+        {
+            CellSpacing = 0,
+            Margin = new Thickness(0, 0, 0, 12)
+        };
+        table.Columns.Add(new TableColumn { Width = new GridLength(1, GridUnitType.Star) });
+        table.Columns.Add(new TableColumn { Width = new GridLength(1, GridUnitType.Star) });
+        table.Columns.Add(new TableColumn { Width = new GridLength(1, GridUnitType.Star) });
+
+        var group = new TableRowGroup();
+        for (var row = 0; row < 3; row++)
+        {
+            var tableRow = new TableRow();
+            for (var column = 0; column < 3; column++)
+            {
+                var cell = new TableCell(new Paragraph(new Run(row == 0 ? $"列 {column + 1}" : string.Empty)))
+                {
+                    BorderBrush = (Brush)FindResource("BorderBrush"),
+                    BorderThickness = new Thickness(1),
+                    Padding = new Thickness(6)
+                };
+                tableRow.Cells.Add(cell);
+            }
+
+            group.Rows.Add(tableRow);
+        }
+
+        table.RowGroups.Add(group);
+        var caret = Editor.CaretPosition ?? Editor.Document.ContentEnd;
+        var block = FindTopLevelBlock(caret, Editor.Document);
+        if (block is null)
+        {
+            Editor.Document.Blocks.Add(table);
+        }
+        else
+        {
+            Editor.Document.Blocks.InsertAfter(block, table);
+        }
+
+        MarkDirty();
+        StatusText.Text = "已插入 3×3 表格";
+    }
+
+    private static Block? FindTopLevelBlock(TextPointer caret, FlowDocument document)
+    {
+        DependencyObject? current = caret.Parent;
+        while (current is not null && !ReferenceEquals(current, document))
+        {
+            if (current is Block block && ReferenceEquals(block.Parent, document))
+            {
+                return block;
+            }
+
+            current = current switch
+            {
+                FrameworkContentElement contentElement => contentElement.Parent,
+                FrameworkElement element => element.Parent,
+                _ => LogicalTreeHelper.GetParent(current)
+            };
+        }
+
+        return document.Blocks.LastBlock;
+    }
+
+    private void ConvertLegacyButton_Click(object sender, RoutedEventArgs e)
+    {
+        MessageBox.Show(
+            this,
+            "旧版 DOC：请使用 Microsoft Word 或 LibreOffice 另存为 DOCX。\n\n" +
+            "ODT：可通过主窗口侧栏「转换」转为 DOCX，再回到文档编辑器打开。\n\n" +
+            "转换使用本地 Calibre ebook-convert，无需联网。",
+            "转换为 DOCX",
+            MessageBoxButton.OK,
+            MessageBoxImage.Information);
     }
 
     private void BoldButton_Click(object sender, RoutedEventArgs e) =>

@@ -78,6 +78,10 @@ public sealed class CloudSyncService
         }
 
         Directory.CreateDirectory(_settings.SyncFolderPath);
+        // Refresh the live settings timestamp before capturing a manifest. Delayed UI saves
+        // persist cloned snapshots, so callers that invoke this service directly must not rely
+        // on the UI dialog having refreshed the live AppSettings instance first.
+        settingsStore.Save(_settings);
         var remotePath = Path.Combine(_settings.SyncFolderPath, "nogareader-sync.json");
         var localManifest = await BuildLocalManifestAsync(database, cancellationToken).ConfigureAwait(false);
         SyncManifest remoteManifest;
@@ -229,8 +233,25 @@ public sealed class CloudSyncService
             UpdatedAt = DateTimeOffset.UtcNow,
             DeviceName = Environment.MachineName,
             Books = map.Values.OrderBy(item => item.Title, StringComparer.CurrentCultureIgnoreCase).ToList(),
-            Settings = local.Settings ?? remote.Settings
+            Settings = MergeSettings(local.Settings, remote.Settings)
         };
+    }
+
+    private static SyncSettingsSnapshot? MergeSettings(
+        SyncSettingsSnapshot? local,
+        SyncSettingsSnapshot? remote)
+    {
+        if (local is null)
+        {
+            return remote;
+        }
+
+        if (remote is null)
+        {
+            return local;
+        }
+
+        return local.UpdatedAt >= remote.UpdatedAt ? local : remote;
     }
 
     private static List<SyncAnnotationState> MergeAnnotations(
@@ -387,6 +408,7 @@ public sealed class CloudSyncService
 
     private SyncSettingsSnapshot CaptureSettings() => new()
     {
+        UpdatedAt = _settings.SyncSettingsModifiedUtc,
         Theme = _settings.Theme.ToString(),
         ReaderTheme = _settings.ReaderTheme.ToString(),
         ReaderFlow = _settings.ReaderFlow.ToString(),
@@ -398,7 +420,8 @@ public sealed class CloudSyncService
         ComicDirection = _settings.ComicDirection.ToString(),
         ComicFit = _settings.ComicFit.ToString(),
         ComicCoverSinglePage = _settings.ComicCoverSinglePage,
-        ComicScale = _settings.ComicScale
+        ComicScale = _settings.ComicScale,
+        UiLanguage = _settings.UiLanguage
     };
 
     private void ApplySettings(SyncSettingsSnapshot snapshot)
@@ -440,6 +463,8 @@ public sealed class CloudSyncService
 
         _settings.ComicCoverSinglePage = snapshot.ComicCoverSinglePage;
         _settings.ComicScale = Math.Clamp(snapshot.ComicScale, 0.5, 3.0);
+        _settings.UiLanguage = snapshot.UiLanguage?.Trim() ?? string.Empty;
+        _settings.SyncSettingsModifiedUtc = snapshot.UpdatedAt;
     }
 
     private static TextAnchor? DeserializeAnchor(string? json)

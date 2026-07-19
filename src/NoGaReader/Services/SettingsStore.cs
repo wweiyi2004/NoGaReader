@@ -1,14 +1,80 @@
+using System.Collections.Concurrent;
 using NoGaReader.Models;
 
 namespace NoGaReader.Services;
 
 public sealed class SettingsStore
 {
-    private readonly string _path = Path.Combine(AppPaths.DataRoot, "settings.json");
+    private static readonly ConcurrentDictionary<string, SaveState> SaveStates =
+        new(StringComparer.OrdinalIgnoreCase);
+
+    private readonly string _path;
+    private readonly SaveState _saveState;
+
+    public SettingsStore()
+    {
+        _path = Path.GetFullPath(Path.Combine(AppPaths.DataRoot, "settings.json"));
+        _saveState = SaveStates.GetOrAdd(_path, static _ => new SaveState());
+    }
 
     public AppSettings Load()
     {
-        var settings = JsonFileStore.Load(_path, new AppSettings());
+        lock (_saveState.Gate)
+        {
+            var settings = Normalize(JsonFileStore.Load(_path, new AppSettings()));
+            if (settings.SyncSettingsModifiedUtc == DateTimeOffset.MinValue)
+            {
+                _saveState.LegacySettingsTimestamp =
+                    _saveState.LegacySettingsTimestamp == DateTimeOffset.MinValue
+                        ? DateTimeOffset.UtcNow
+                        : _saveState.LegacySettingsTimestamp;
+                settings.SyncSettingsModifiedUtc = _saveState.LegacySettingsTimestamp;
+            }
+
+            return settings;
+        }
+    }
+
+    public long ReserveSaveRevision()
+    {
+        return Interlocked.Increment(ref _saveState.NextRevision);
+    }
+
+    public void Save(AppSettings settings)
+    {
+        Save(settings, ReserveSaveRevision());
+    }
+
+    public void Save(AppSettings settings, long revision)
+    {
+        ArgumentNullException.ThrowIfNull(settings);
+        if (revision < 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(revision));
+        }
+
+        AdvanceReservedRevision(revision);
+        lock (_saveState.Gate)
+        {
+            if (revision < _saveState.LastWrittenRevision)
+            {
+                return;
+            }
+
+            Normalize(settings);
+            var persisted = Normalize(JsonFileStore.Load(_path, new AppSettings()));
+            UpdateSyncSettingsTimestamp(settings, persisted);
+            JsonFileStore.Save(_path, settings);
+            _saveState.LastWrittenRevision = revision;
+            _saveState.LegacySettingsTimestamp = settings.SyncSettingsModifiedUtc;
+        }
+    }
+
+    private static AppSettings Normalize(AppSettings settings)
+    {
+        settings.Theme = Enum.IsDefined(settings.Theme)
+            ? settings.Theme
+            : AppThemeMode.System;
         settings.ZoomFactor = Math.Clamp(settings.ZoomFactor, 0.5, 3.0);
         settings.ReaderFontSize = Math.Clamp(settings.ReaderFontSize, 14, 30);
         settings.ReaderLineHeight = Math.Clamp(settings.ReaderLineHeight, 1.4, 2.4);
@@ -50,21 +116,68 @@ public sealed class SettingsStore
             ? settings.SyncProvider
             : SyncProviderKind.None;
         settings.LastSyncUtc = settings.LastSyncUtc?.Trim() ?? string.Empty;
+        settings.UiLanguage = settings.UiLanguage?.Trim() ?? string.Empty;
+        if (settings.SyncSettingsModifiedUtc != DateTimeOffset.MinValue)
+        {
+            settings.SyncSettingsModifiedUtc = settings.SyncSettingsModifiedUtc.ToUniversalTime();
+        }
+
         return settings;
     }
 
-    public void Save(AppSettings settings)
+    private void AdvanceReservedRevision(long revision)
     {
-        settings.CalibreEbookConvertPath = NormalizeOptionalPath(settings.CalibreEbookConvertPath);
-        settings.ConversionOutputDirectory = NormalizeOptionalPath(settings.ConversionOutputDirectory);
-        settings.ConversionDefaultTargetExtension = NormalizeTargetExtension(
-            settings.ConversionDefaultTargetExtension);
-        settings.SyncFolderPath = NormalizeOptionalPath(settings.SyncFolderPath);
-        settings.SyncProvider = Enum.IsDefined(settings.SyncProvider)
-            ? settings.SyncProvider
-            : SyncProviderKind.None;
-        settings.LastSyncUtc = settings.LastSyncUtc?.Trim() ?? string.Empty;
-        JsonFileStore.Save(_path, settings);
+        while (true)
+        {
+            var current = Volatile.Read(ref _saveState.NextRevision);
+            if (current >= revision)
+            {
+                return;
+            }
+
+            if (Interlocked.CompareExchange(ref _saveState.NextRevision, revision, current) == current)
+            {
+                return;
+            }
+        }
+    }
+
+    private static void UpdateSyncSettingsTimestamp(AppSettings settings, AppSettings persisted)
+    {
+        var incomingTimestamp = settings.SyncSettingsModifiedUtc;
+        var persistedTimestamp = persisted.SyncSettingsModifiedUtc;
+        if (incomingTimestamp > persistedTimestamp)
+        {
+            settings.SyncSettingsModifiedUtc = incomingTimestamp;
+            return;
+        }
+
+        if (CreateSyncSettingsFingerprint(settings) == CreateSyncSettingsFingerprint(persisted) &&
+            persistedTimestamp != DateTimeOffset.MinValue)
+        {
+            settings.SyncSettingsModifiedUtc = persistedTimestamp;
+            return;
+        }
+
+        settings.SyncSettingsModifiedUtc = DateTimeOffset.UtcNow;
+    }
+
+    private static SyncSettingsFingerprint CreateSyncSettingsFingerprint(AppSettings settings)
+    {
+        return new SyncSettingsFingerprint(
+            settings.Theme,
+            settings.ReaderTheme,
+            settings.ReaderFlow,
+            settings.ReaderFontSize,
+            settings.UsePublisherFont,
+            settings.ReaderLineHeight,
+            settings.ReaderContentWidth,
+            settings.ComicDisplay,
+            settings.ComicDirection,
+            settings.ComicFit,
+            settings.ComicCoverSinglePage,
+            settings.ComicScale,
+            settings.UiLanguage);
     }
 
     private static string NormalizeOptionalPath(string? path)
@@ -99,8 +212,34 @@ public sealed class SettingsStore
 
         extension = extension.ToLowerInvariant();
         return extension is ".epub" or ".pdf" or ".mobi" or ".azw3" or ".docx" or ".fb2" or ".rtf"
-            or ".txt" or ".htmlz" or ".zip"
+            or ".txt" or ".htmlz" or ".zip" or ".txtz" or ".lit" or ".lrf" or ".pmlz" or ".rb"
             ? extension
             : ".epub";
     }
+
+    private sealed class SaveState
+    {
+        public object Gate { get; } = new();
+
+        public long NextRevision;
+
+        public long LastWrittenRevision;
+
+        public DateTimeOffset LegacySettingsTimestamp;
+    }
+
+    private readonly record struct SyncSettingsFingerprint(
+        AppThemeMode Theme,
+        ReaderThemeMode ReaderTheme,
+        ReaderFlowMode ReaderFlow,
+        int ReaderFontSize,
+        bool UsePublisherFont,
+        double ReaderLineHeight,
+        int ReaderContentWidth,
+        ComicDisplayMode ComicDisplay,
+        ComicReadingDirection ComicDirection,
+        ComicFitMode ComicFit,
+        bool ComicCoverSinglePage,
+        double ComicScale,
+        string UiLanguage);
 }

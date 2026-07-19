@@ -48,6 +48,7 @@ public partial class ConversionDialog : Window
 
         RefreshRuntimeStatus();
         FooterStatusText.Text = "添加文件后点击开始转换。无次数限制。";
+        Loaded += (_, _) => App.ApplyWindowChromeTheme(this);
     }
 
     private void RefreshRuntimeStatus()
@@ -111,7 +112,7 @@ public partial class ConversionDialog : Window
         {
             Title = "添加要转换的文件",
             Filter =
-                "可转换文件|*.epub;*.mobi;*.azw;*.azw3;*.pdf;*.fb2;*.txt;*.html;*.htm;*.docx;*.rtf;*.cbz;*.cbr;*.cb7;*.zip;*.rar;*.md;*.markdown|" +
+                "可转换文件|*.epub;*.mobi;*.azw;*.azw3;*.pdf;*.fb2;*.txt;*.html;*.htm;*.docx;*.odt;*.rtf;*.cbz;*.cbr;*.cb7;*.zip;*.rar;*.md;*.markdown;*.chm;*.djvu;*.lit;*.lrf;*.pdb|" +
                 "所有文件|*.*",
             Multiselect = true,
             CheckFileExists = true

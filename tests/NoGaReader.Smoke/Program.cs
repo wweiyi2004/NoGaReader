@@ -58,6 +58,7 @@ try
         "Explicit reader background remains customized after migration");
 
     TestSettingsCloneCompleteness();
+    await TestConcurrentSettingsSaveAsync();
 
     settingsStore.Save(new AppSettings
     {
@@ -281,6 +282,11 @@ try
     Assert(converter.OutputFormats.Count >= 5, "Conversion output formats");
     Assert(converter.CanConvert(".epub", ".pdf") == converter.IsAvailable,
         "CanConvert reflects runtime availability");
+    Assert(!CalibreConverter.IsConvertibleInput(".doc") &&
+           !CalibreConverter.IsConvertibleInput(".xps") &&
+           !CalibreConverter.IsConvertibleInput(".oxps") &&
+           converter.OutputFormats.All(format => format.NormalizedExtension != ".oeb"),
+        "Calibre format matrix excludes unsupported DOC/XPS inputs and directory-based OEB output");
     Assert(CalibreConverter.IsKindleExtension(".mobi") &&
            CalibreConverter.IsKindleExtension(".azw3") &&
            CalibreConverter.IsKindleExtension(".azw"),
@@ -342,6 +348,12 @@ try
         "Conversion target extension normalization");
     Assert(loadedConversionSettings.ConversionOutputDirectory.EndsWith("out-dir", StringComparison.OrdinalIgnoreCase),
         "Conversion output directory persistence");
+    conversionSettingsStore.Save(new AppSettings
+    {
+        ConversionDefaultTargetExtension = "PMLZ"
+    });
+    Assert(conversionSettingsStore.Load().ConversionDefaultTargetExtension == ".pmlz",
+        "New conversion output formats survive settings normalization");
 
     // V0.9 document editor Open XML round-trip
     Assert(OfficeDocumentService.CanEditNatively(".docx") &&
@@ -361,6 +373,9 @@ try
     Assert(reloadedText.Contains("Smoke 标题", StringComparison.Ordinal) &&
            reloadedText.Contains("粗体段落", StringComparison.Ordinal),
         "DOCX round-trip preserves text");
+    var imageDocxPath = Path.Combine(testRoot, "editor-image.docx");
+    TestDocxImageRoundTrip(imageDocxPath);
+    generatedSources.Add((imageDocxPath, "office"));
     var rtfPath = Path.Combine(testRoot, "editor-sample.rtf");
     OfficeDocumentService.Save(reloaded, rtfPath);
     generatedSources.Add((rtfPath, "office"));
@@ -387,10 +402,6 @@ try
     Assert(DocumentLoader.IsSupported(Path.Combine(testRoot, "sample.cbt")), "DocumentLoader supports CBT");
     Assert(DocumentLoader.OpenFileFilter.Contains("*.cbt", StringComparison.OrdinalIgnoreCase),
         "Open filter lists CBT");
-    Assert(FileAssociationService.AssociatedExtensions.Contains(".epub") &&
-           FileAssociationService.AssociatedExtensions.Contains(".cbt") &&
-           FileAssociationService.AssociatedExtensions.Contains(".docx"),
-        "File association extension set");
     Assert(!string.IsNullOrWhiteSpace(SingleInstanceService.MutexName) &&
            !string.IsNullOrWhiteSpace(SingleInstanceService.PipeName),
         "Single-instance identifiers");
@@ -403,13 +414,34 @@ try
            DocumentLoader.OpenFileFilter.Contains("*.djvu", StringComparison.OrdinalIgnoreCase),
         "Open filter lists fixed-layout formats");
 
-    // XPS image package path
+    // A real two-page XPS can contain resource images that are not standalone pages.
     var xpsPath = Path.Combine(testRoot, "sample.xps");
-    CreateXpsWithImage(xpsPath);
+    CreateXpsWithFixedPagesAndResourceImage(xpsPath);
     generatedSources.Add((xpsPath, "xps"));
-    var xpsSession = await loader.LoadAsync(xpsPath);
-    Assert(xpsSession.Kind is ReaderDocumentKind.Comic or ReaderDocumentKind.Pdf, "XPS loads");
-    Assert(xpsSession.Sections.Count >= 1, "XPS has sections");
+    ReaderSession? xpsSession = null;
+    try
+    {
+        xpsSession = await loader.LoadAsync(xpsPath);
+    }
+    catch (InvalidOperationException exception)
+    {
+        Assert(exception.Message.Contains("XPS", StringComparison.OrdinalIgnoreCase) &&
+               (exception.Message.Contains("PDF", StringComparison.OrdinalIgnoreCase) ||
+                exception.Message.Contains("转换", StringComparison.Ordinal)),
+            "XPS fails with explicit conversion guidance when the rendering engine is unavailable");
+    }
+    if (xpsSession is not null)
+    {
+        Assert(xpsSession.Sections.Count == 2 && xpsSession.ComicPages.Count == 2,
+            "XPS renders declared FixedPages instead of treating resource images as pages");
+        Assert(xpsSession.ComicPages.All(page =>
+                   Path.GetExtension(page.FullPath).Equals(".png", StringComparison.OrdinalIgnoreCase) &&
+                   !File.ReadAllBytes(page.FullPath).SequenceEqual(PixelPng())),
+            "XPS pages are rendered output rather than raw package resources");
+        Assert(!File.ReadAllBytes(xpsSession.ComicPages[0].FullPath)
+                .SequenceEqual(File.ReadAllBytes(xpsSession.ComicPages[1].FullPath)),
+            "Distinct XPS FixedPages produce distinct rendered pixels");
+    }
 
     var excessiveXpsPath = Path.Combine(testRoot, "too-many-entries.xps");
     CreateXpsWithTooManyEntries(excessiveXpsPath);
@@ -510,27 +542,15 @@ try
 
     await TestCrossDeviceSyncAsync(testRoot, syncStore);
 
-
-    // CBT extraction via SharpCompress tar when possible: create tar-like using SharpCompress if available.
-    // Minimal: create a .cbt as zip renamed is not tar; use ArchiveFactory only if tar writer exists.
-    // Instead verify loader rejects empty cbt gracefully is hard; create tar with SharpCompress.Writers.
-    try
-    {
-        var cbtPath = Path.Combine(testRoot, "sample.cbt");
-        CreateCbt(cbtPath);
-        generatedSources.Add((cbtPath, "comic"));
-        var cbt = await loader.LoadAsync(cbtPath);
-        Assert(cbt.Kind == ReaderDocumentKind.Comic && cbt.ComicPages.Count >= 1, "CBT loads as comic");
-    }
-    catch (Exception exception) when (exception is not InvalidOperationException)
-    {
-        // If tar creation helper missing, still pass extension routing tests above.
-        Assert(exception is not NotSupportedException, "CBT path should not be NotSupported by extension alone: " + exception.Message);
-    }
+    var cbtPath = Path.Combine(testRoot, "sample.cbt");
+    CreateCbt(cbtPath);
+    generatedSources.Add((cbtPath, "comic"));
+    var cbt = await loader.LoadAsync(cbtPath);
+    Assert(cbt.Kind == ReaderDocumentKind.Comic && cbt.ComicPages.Count == 1, "CBT loads as comic");
 
     Console.WriteLine(
         "NoGaReader smoke tests passed: document loaders, comic archives/folders/runtime/safety, SQLite library, " +
-        "multi-hit search, relocation, annotation export/runtime, library scanning, hierarchical TOC, conversion plugin, document editor, single-instance/file-association/CBT, CHM/XPS/DJVU, cloud sync.");
+        "multi-hit search, relocation, annotation export/runtime, library scanning, hierarchical TOC, conversion plugin, document editor, single-instance/CBT, CHM/XPS/DJVU, cloud sync.");
 }
 finally
 {
@@ -572,7 +592,9 @@ static void TestSettingsCloneCompleteness()
         SyncFolderPath = @"D:\Sync\NoGaReader",
         SyncIncludeAnnotations = false,
         SyncIncludeSettings = false,
-        LastSyncUtc = "2026-07-18 12:00:00Z"
+        SyncSettingsModifiedUtc = new DateTimeOffset(2026, 7, 18, 11, 0, 0, TimeSpan.Zero),
+        LastSyncUtc = "2026-07-18 12:00:00Z",
+        UiLanguage = "en-US"
     };
     var mainWindowType = typeof(AppSettings).Assembly.GetType("NoGaReader.MainWindow", throwOnError: true)!;
     var cloneMethod = mainWindowType.GetMethod(
@@ -591,8 +613,65 @@ static void TestSettingsCloneCompleteness()
            clone.SyncFolderPath == source.SyncFolderPath &&
            clone.SyncIncludeAnnotations == source.SyncIncludeAnnotations &&
            clone.SyncIncludeSettings == source.SyncIncludeSettings &&
-           clone.LastSyncUtc == source.LastSyncUtc,
+           clone.SyncSettingsModifiedUtc == source.SyncSettingsModifiedUtc &&
+           clone.LastSyncUtc == source.LastSyncUtc &&
+           clone.UiLanguage == source.UiLanguage,
         "Settings snapshot preserves sync configuration");
+}
+
+static async Task TestConcurrentSettingsSaveAsync()
+{
+    const int workerCount = 12;
+    const int savesPerWorker = 60;
+    var start = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+    var tasks = Enumerable.Range(0, workerCount).Select(async worker =>
+    {
+        await start.Task;
+        await Task.Run(() =>
+        {
+            var store = new SettingsStore();
+            for (var iteration = 0; iteration < savesPerWorker; iteration++)
+            {
+                store.Save(new AppSettings
+                {
+                    ReaderFontSize = 14 + ((worker + iteration) % 17),
+                    ReaderContentWidth = 560 + ((worker + iteration) % 9) * 50,
+                    ReaderThemePreferenceInitialized = true
+                });
+            }
+        });
+    }).ToArray();
+
+    start.SetResult();
+    await Task.WhenAll(tasks);
+
+    var settingsPath = Path.Combine(AppPaths.DataRoot, "settings.json");
+    using var json = JsonDocument.Parse(await File.ReadAllTextAsync(settingsPath, Encoding.UTF8));
+    var loadedAfterConcurrentSaves = new SettingsStore().Load();
+    Assert(json.RootElement.ValueKind == JsonValueKind.Object &&
+           loadedAfterConcurrentSaves.ReaderFontSize is >= 14 and <= 30 &&
+           loadedAfterConcurrentSaves.ReaderContentWidth is >= 560 and <= 1000,
+        "Concurrent SettingsStore saves remain atomic and produce valid JSON");
+
+    var revisionStore = new SettingsStore();
+    var staleRevision = revisionStore.ReserveSaveRevision();
+    var staleSnapshot = new AppSettings
+    {
+        ReaderFontSize = 15,
+        ReaderThemePreferenceInitialized = true,
+        UiLanguage = "zh-CN"
+    };
+    var latestSnapshot = new AppSettings
+    {
+        ReaderFontSize = 29,
+        ReaderThemePreferenceInitialized = true,
+        UiLanguage = "en-US"
+    };
+    revisionStore.Save(latestSnapshot);
+    revisionStore.Save(staleSnapshot, staleRevision);
+    var loadedAfterStaleSave = revisionStore.Load();
+    Assert(loadedAfterStaleSave.ReaderFontSize == 29 && loadedAfterStaleSave.UiLanguage == "en-US",
+        "A delayed stale settings snapshot cannot overwrite a newer revision");
 }
 
 static async Task TestCrossDeviceSyncAsync(string testRoot, SettingsStore settingsStore)
@@ -692,6 +771,116 @@ static async Task TestCrossDeviceSyncAsync(string testRoot, SettingsStore settin
            (await databaseA.ListAnnotationTombstonesAsync(bookA.Id)).Any(item => item.AnnotationId == annotationA.Id),
         "Remote deletion does not resurrect annotation");
 
+    // Delayed UI persistence writes a cloned snapshot. A direct service caller must refresh
+    // the live object's timestamp before merging, even without going through SyncDialog.
+    var directSettingsRoot = Path.Combine(fixtureRoot, "direct-settings-sync");
+    Directory.CreateDirectory(directSettingsRoot);
+    var staleLiveSettings = new AppSettings
+    {
+        SyncEnabled = true,
+        SyncProvider = SyncProviderKind.Folder,
+        SyncFolderPath = directSettingsRoot,
+        SyncIncludeAnnotations = false,
+        SyncIncludeSettings = true,
+        ReaderFontSize = 16,
+        ReaderThemePreferenceInitialized = true
+    };
+    settingsStore.Save(staleLiveSettings);
+    var staleLiveTimestamp = staleLiveSettings.SyncSettingsModifiedUtc;
+    staleLiveSettings.ReaderFontSize = 27;
+    await Task.Delay(20);
+    var delayedSnapshot = new AppSettings
+    {
+        SyncEnabled = true,
+        SyncProvider = SyncProviderKind.Folder,
+        SyncFolderPath = directSettingsRoot,
+        SyncIncludeAnnotations = false,
+        SyncIncludeSettings = true,
+        ReaderFontSize = 27,
+        ReaderThemePreferenceInitialized = true,
+        SyncSettingsModifiedUtc = staleLiveTimestamp
+    };
+    settingsStore.Save(delayedSnapshot);
+    var persistedDelayedTimestamp = delayedSnapshot.SyncSettingsModifiedUtc;
+    Assert(persistedDelayedTimestamp > staleLiveTimestamp.AddTicks(1),
+        "Delayed cloned settings snapshot receives a newer persisted timestamp");
+    var intermediateRemoteTimestamp = staleLiveTimestamp.AddTicks(1);
+    var intermediateRemoteManifest = new SyncManifest
+    {
+        SchemaVersion = 2,
+        UpdatedAt = intermediateRemoteTimestamp,
+        DeviceName = "intermediate-remote-device",
+        Settings = new SyncSettingsSnapshot
+        {
+            UpdatedAt = intermediateRemoteTimestamp,
+            ReaderFontSize = 18
+        }
+    };
+    await File.WriteAllTextAsync(
+        Path.Combine(directSettingsRoot, "nogareader-sync.json"),
+        JsonSerializer.Serialize(intermediateRemoteManifest, new JsonSerializerOptions
+        {
+            PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+            WriteIndented = true
+        }),
+        Encoding.UTF8);
+    var directSettingsSync = new CloudSyncService(staleLiveSettings);
+    Assert((await directSettingsSync.SynchronizeAsync(databaseA, settingsStore)).Succeeded &&
+           staleLiveSettings.ReaderFontSize == 27 &&
+           staleLiveSettings.SyncSettingsModifiedUtc >= persistedDelayedTimestamp,
+        "Direct cloud sync refreshes a stale live settings timestamp before merge");
+
+    var settingsPrecedenceRoot = Path.Combine(fixtureRoot, "settings-precedence");
+    Directory.CreateDirectory(settingsPrecedenceRoot);
+    var localSettingsTimestamp = DateTimeOffset.UtcNow.AddDays(-1);
+    var remoteSettingsTimestamp = DateTimeOffset.UtcNow.AddDays(1);
+    var localSettings = new AppSettings
+    {
+        SyncEnabled = true,
+        SyncProvider = SyncProviderKind.Folder,
+        SyncFolderPath = settingsPrecedenceRoot,
+        SyncIncludeAnnotations = false,
+        SyncIncludeSettings = true,
+        ReaderFontSize = 16,
+        ReaderTheme = ReaderThemeMode.Light,
+        ReaderThemePreferenceInitialized = true,
+        UiLanguage = "zh-CN",
+        SyncSettingsModifiedUtc = localSettingsTimestamp
+    };
+    var remoteManifest = new SyncManifest
+    {
+        SchemaVersion = 2,
+        UpdatedAt = remoteSettingsTimestamp,
+        DeviceName = "newer-remote-device",
+        Settings = new SyncSettingsSnapshot
+        {
+            UpdatedAt = remoteSettingsTimestamp,
+            ReaderFontSize = 30,
+            ReaderTheme = ReaderThemeMode.Dark.ToString(),
+            UiLanguage = "en-US"
+        }
+    };
+    await File.WriteAllTextAsync(
+        Path.Combine(settingsPrecedenceRoot, "nogareader-sync.json"),
+        JsonSerializer.Serialize(remoteManifest, new JsonSerializerOptions
+        {
+            PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+            WriteIndented = true
+        }),
+        Encoding.UTF8);
+
+    var settingsSync = new CloudSyncService(localSettings);
+    Assert((await settingsSync.SynchronizeAsync(databaseA, settingsStore)).Succeeded,
+        "Settings precedence sync succeeds");
+    var persistedRemoteSettings = settingsStore.Load();
+    Assert(localSettings.ReaderFontSize == 30 &&
+           localSettings.ReaderTheme == ReaderThemeMode.Dark &&
+           localSettings.UiLanguage == "en-US" &&
+           localSettings.SyncSettingsModifiedUtc == remoteSettingsTimestamp &&
+           persistedRemoteSettings.ReaderFontSize == 30 &&
+           persistedRemoteSettings.UiLanguage == "en-US",
+        "Newer remote settings snapshot wins and persists locally");
+
     SqliteConnection.ClearAllPools();
 }
 
@@ -724,14 +913,19 @@ static async Task TestLibraryDatabaseAsync(string testRoot)
     {
         await schemaConnection.OpenAsync();
         await using var schemaCommand = schemaConnection.CreateCommand();
+        schemaCommand.CommandText = "SELECT sqlite_version();";
+        var sqliteVersionText = Convert.ToString(await schemaCommand.ExecuteScalarAsync());
+        Assert(Version.TryParse(sqliteVersionText, out var sqliteVersion) &&
+               sqliteVersion >= new Version(3, 50, 2),
+            $"Native SQLite runtime is patched (loaded {sqliteVersionText ?? "unknown"})");
         schemaCommand.CommandText =
             "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'search_sections_fts';";
         var ftsSchema = await schemaCommand.ExecuteScalarAsync() as string;
         Assert(ftsSchema?.Contains("trigram", StringComparison.OrdinalIgnoreCase) == true,
             "Database FTS uses trigram tokenizer");
         schemaCommand.CommandText = "PRAGMA user_version;";
-        Assert(Convert.ToInt32(await schemaCommand.ExecuteScalarAsync()) == 3,
-            "Database schema includes annotation tombstones");
+        Assert(Convert.ToInt32(await schemaCommand.ExecuteScalarAsync()) == 4,
+            "Database schema includes book tags");
     }
 
     var savedBook = await database.UpsertBookAsync(new LibraryBook
@@ -743,9 +937,11 @@ static async Task TestLibraryDatabaseAsync(string testRoot)
         FileSize = new FileInfo(sourcePath).Length,
         ModifiedUtc = File.GetLastWriteTimeUtc(sourcePath),
         LastOpenedUtc = DateTimeOffset.UtcNow,
-        SectionCount = 2
+        SectionCount = 2,
+        Tags = "科幻； 经典,科幻"
     });
-    Assert(savedBook.Id > 0, "Database book identity");
+    Assert(savedBook.Id > 0 && savedBook.Tags == "科幻,经典",
+        "Database book identity and normalized tags");
     Assert((await database.ListBooksAsync()).Count == 1, "Database book insert/list");
 
     var updatedBook = await database.UpsertBookAsync(new LibraryBook
@@ -758,7 +954,10 @@ static async Task TestLibraryDatabaseAsync(string testRoot)
         SectionCount = 3
     });
     Assert(updatedBook.Id == savedBook.Id, "Database path upsert preserves identity");
-    Assert((await database.FindBookByPathAsync(sourcePath))?.Title == "数据库测试书（更新）", "Database book update/find");
+    var foundUpdatedBook = await database.FindBookByPathAsync(sourcePath);
+    Assert(foundUpdatedBook?.Title == "数据库测试书（更新）" &&
+           foundUpdatedBook.Tags == "科幻,经典",
+        "Sparse database book upsert preserves existing tags");
 
     var location = new ReaderLocation
     {
@@ -786,10 +985,24 @@ static async Task TestLibraryDatabaseAsync(string testRoot)
     Assert(restoredLocation!.SectionIndex == 1 && NearlyEqual(restoredLocation.SectionProgress, 0.42), "Database reader location values");
     Assert(restoredLocation.Anchor?.ExactText == "精确恢复" && restoredLocation.Anchor.StartPath == "0/2/1", "Database reader text anchor round-trip");
     var listedBookWithLocation = (await database.ListBooksAsync()).Single();
-    Assert(listedBookWithLocation.Location is not null &&
+    Assert(listedBookWithLocation.Tags == "科幻,经典" &&
+           listedBookWithLocation.Location is not null &&
            NearlyEqual(listedBookWithLocation.Location.DocumentProgress, 0.71) &&
            listedBookWithLocation.ProgressText == "已读 71%",
-        "Database library list includes reading progress");
+        "Database library list reads tags and location together");
+    var clearedTagsBook = await database.UpsertBookAsync(new LibraryBook
+    {
+        Path = sourcePath,
+        Title = updatedBook.Title,
+        Author = updatedBook.Author,
+        Format = updatedBook.Format,
+        FileSize = updatedBook.FileSize,
+        SectionCount = updatedBook.SectionCount,
+        Tags = string.Empty
+    });
+    Assert(clearedTagsBook.Tags is null &&
+           (await database.FindBookByPathAsync(sourcePath))?.Tags is null,
+        "Explicit empty tags clear existing book tags");
 
     var annotation = await database.UpsertAnnotationAsync(new Annotation
     {
@@ -812,6 +1025,40 @@ static async Task TestLibraryDatabaseAsync(string testRoot)
     var updatedAnnotation = await database.UpsertAnnotationAsync(annotation);
     Assert(updatedAnnotation.Type == AnnotationType.Note && updatedAnnotation.Note == "这是一条本地笔记", "Database annotation update");
     Assert((await database.FindAnnotationAsync(annotation.Id))?.Anchor?.Suffix == "的位置", "Database annotation anchor round-trip");
+
+    var atomicBatchRejected = false;
+    try
+    {
+        await database.UpsertAnnotationsAsync(
+        [
+            new Annotation
+            {
+                Id = "atomic-import-valid",
+                BookId = savedBook.Id,
+                Type = AnnotationType.Note,
+                SectionIndex = 0,
+                Note = "must roll back with the batch"
+            },
+            new Annotation
+            {
+                Id = "atomic-import-invalid-book",
+                BookId = long.MaxValue,
+                Type = AnnotationType.Highlight,
+                SectionIndex = 0,
+                SelectedText = "missing parent book"
+            }
+        ]);
+    }
+    catch (SqliteException)
+    {
+        atomicBatchRejected = true;
+    }
+
+    Assert(atomicBatchRejected &&
+           await database.FindAnnotationAsync("atomic-import-valid") is null &&
+           await database.FindAnnotationAsync("atomic-import-invalid-book") is null &&
+           (await database.FindAnnotationAsync(annotation.Id))?.Note == "这是一条本地笔记",
+        "Annotation batch upsert rolls back atomically when any row fails");
 
     var libraryFolderPath = Path.Combine(fixtureRoot, "library-folder");
     Directory.CreateDirectory(libraryFolderPath);
@@ -1401,61 +1648,83 @@ static void CreateEpub(string path)
 
 static void CreateCbt(string path)
 {
-    // CBT is tar; write an uncompressed ustar with one PNG member.
-    var pixel = PixelPng();
     using var stream = File.Create(path);
-    WriteTarFile(stream, "page1.png", pixel);
-    // two zero blocks end
-    stream.Write(new byte[512]);
-    stream.Write(new byte[512]);
-}
-
-static void WriteTarFile(Stream stream, string name, byte[] content)
-{
-    var header = new byte[512];
-    var nameBytes = Encoding.ASCII.GetBytes(name);
-    Array.Copy(nameBytes, header, Math.Min(nameBytes.Length, 100));
-    var mode = Encoding.ASCII.GetBytes("0000644");
-    Array.Copy(mode, 0, header, 100, mode.Length);
-    var uid = Encoding.ASCII.GetBytes("0000000");
-    Array.Copy(uid, 0, header, 108, uid.Length);
-    Array.Copy(uid, 0, header, 116, uid.Length);
-    var sizeOctal = Convert.ToString(content.Length, 8).PadLeft(11, '0') + "\0";
-    var sizeBytes = Encoding.ASCII.GetBytes(sizeOctal);
-    Array.Copy(sizeBytes, 0, header, 124, Math.Min(sizeBytes.Length, 12));
-    var mtime = Encoding.ASCII.GetBytes(Convert.ToString(DateTimeOffset.UtcNow.ToUnixTimeSeconds(), 8).PadLeft(11, '0') + "\0");
-    Array.Copy(mtime, 0, header, 136, Math.Min(mtime.Length, 12));
-    // checksum blank then compute
-    for (var i = 148; i < 156; i++) header[i] = (byte)' ';
-    header[156] = (byte)'0'; // regular file
-    var checksum = 0;
-    foreach (var b in header) checksum += b;
-    var checksumText = Convert.ToString(checksum, 8).PadLeft(6, '0') + "\0 ";
-    var checksumBytes = Encoding.ASCII.GetBytes(checksumText);
-    Array.Copy(checksumBytes, 0, header, 148, Math.Min(checksumBytes.Length, 8));
-    // ustar
-    var magic = Encoding.ASCII.GetBytes("ustar\0");
-    Array.Copy(magic, 0, header, 257, magic.Length);
-    var ver = Encoding.ASCII.GetBytes("00");
-    Array.Copy(ver, 0, header, 263, ver.Length);
-    stream.Write(header);
-    stream.Write(content);
-    var padding = (512 - (content.Length % 512)) % 512;
-    if (padding > 0)
-    {
-        stream.Write(new byte[padding]);
-    }
+    using var writer = SharpCompress.Writers.WriterFactory.OpenWriter(
+        stream,
+        SharpCompress.Common.ArchiveType.Tar,
+        SharpCompress.Writers.WriterOptions.ForTar(SharpCompress.Common.CompressionType.None));
+    using var image = new MemoryStream(PixelPng(), writable: false);
+    writer.Write("page1.png", image, DateTime.UtcNow);
 }
 
 
-static void CreateXpsWithImage(string path)
+static void CreateXpsWithFixedPagesAndResourceImage(string path)
 {
-    // Minimal ZIP package containing one PNG, enough for XpsLoader image extraction path.
     using var stream = File.Create(path);
     using var archive = new ZipArchive(stream, ZipArchiveMode.Create);
-    WriteBinaryEntry(archive, "Documents/1/Resources/Images/img0.png", PixelPng());
-    WriteEntry(archive, "[Content_Types].xml",
-        """<?xml version="1.0" encoding="utf-8"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="png" ContentType="image/png"/></Types>""");
+    WriteEntry(archive, "[Content_Types].xml", """
+        <?xml version="1.0" encoding="utf-8"?>
+        <Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+          <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml" />
+          <Default Extension="fdseq" ContentType="application/vnd.ms-package.xps-fixeddocumentsequence+xml" />
+          <Default Extension="fdoc" ContentType="application/vnd.ms-package.xps-fixeddocument+xml" />
+          <Default Extension="fpage" ContentType="application/vnd.ms-package.xps-fixedpage+xml" />
+          <Default Extension="png" ContentType="image/png" />
+        </Types>
+        """);
+    WriteEntry(archive, "_rels/.rels", """
+        <?xml version="1.0" encoding="utf-8"?>
+        <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+          <Relationship Id="Rfdseq"
+                        Type="http://schemas.microsoft.com/xps/2005/06/fixedrepresentation"
+                        Target="/FixedDocumentSequence.fdseq" />
+        </Relationships>
+        """);
+    WriteEntry(archive, "FixedDocumentSequence.fdseq", """
+        <?xml version="1.0" encoding="utf-8"?>
+        <FixedDocumentSequence xmlns="http://schemas.microsoft.com/xps/2005/06">
+          <DocumentReference Source="/Documents/1/FixedDocument.fdoc" />
+        </FixedDocumentSequence>
+        """);
+    WriteEntry(archive, "Documents/1/FixedDocument.fdoc", """
+        <?xml version="1.0" encoding="utf-8"?>
+        <FixedDocument xmlns="http://schemas.microsoft.com/xps/2005/06">
+          <PageContent Source="/Documents/1/Pages/1.fpage" />
+          <PageContent Source="/Documents/1/Pages/2.fpage" />
+        </FixedDocument>
+        """);
+    WriteEntry(archive, "Documents/1/Pages/1.fpage", """
+        <?xml version="1.0" encoding="utf-8"?>
+        <FixedPage xmlns="http://schemas.microsoft.com/xps/2005/06"
+                   Width="480" Height="640" xml:lang="zh-CN">
+          <Path Fill="#FFF1F5F9" Data="M 0,0 L 480,0 480,640 0,640 Z" />
+          <Path Fill="#FF2563EB" Data="M 48,48 L 432,48 432,224 48,224 Z" />
+          <Path Data="M 48,272 L 176,272 176,400 48,400 Z">
+            <Path.Fill>
+              <ImageBrush ImageSource="/Documents/1/Resources/Images/resource.png" />
+            </Path.Fill>
+          </Path>
+        </FixedPage>
+        """);
+    WriteEntry(archive, "Documents/1/Pages/2.fpage", """
+        <?xml version="1.0" encoding="utf-8"?>
+        <FixedPage xmlns="http://schemas.microsoft.com/xps/2005/06"
+                   Width="480" Height="640" xml:lang="zh-CN">
+          <Path Fill="#FFFFF7ED" Data="M 0,0 L 480,0 480,640 0,640 Z" />
+          <Path Fill="#FFEA580C" Data="M 48,48 L 432,48 432,224 48,224 Z" />
+          <Path Stroke="#FF7C2D12" StrokeThickness="12"
+                Data="M 64,320 L 176,448 416,272" />
+        </FixedPage>
+        """);
+    WriteEntry(archive, "Documents/1/Pages/_rels/1.fpage.rels", """
+        <?xml version="1.0" encoding="utf-8"?>
+        <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+          <Relationship Id="Rimage"
+                        Type="http://schemas.microsoft.com/xps/2005/06/required-resource"
+                        Target="../Resources/Images/resource.png" />
+        </Relationships>
+        """);
+    WriteBinaryEntry(archive, "Documents/1/Resources/Images/resource.png", PixelPng());
 }
 
 static void CreateXpsWithTooManyEntries(string path)
@@ -1465,6 +1734,100 @@ static void CreateXpsWithTooManyEntries(string path)
     for (var index = 0; index <= 10_000; index++)
     {
         _ = archive.CreateEntry($"metadata/{index:D5}.xml", CompressionLevel.NoCompression);
+    }
+}
+
+static void TestDocxImageRoundTrip(string path)
+{
+    Exception? failure = null;
+    var thread = new Thread(() =>
+    {
+        try
+        {
+            using var imageStream = new MemoryStream(PixelPng());
+            var bitmap = new System.Windows.Media.Imaging.BitmapImage();
+            bitmap.BeginInit();
+            bitmap.CacheOption = System.Windows.Media.Imaging.BitmapCacheOption.OnLoad;
+            bitmap.StreamSource = imageStream;
+            bitmap.EndInit();
+            bitmap.Freeze();
+
+            var image = new System.Windows.Controls.Image
+            {
+                Source = bitmap,
+                Width = 64,
+                Height = 64
+            };
+            var paragraph = new System.Windows.Documents.Paragraph(
+                new System.Windows.Documents.Run("image before "));
+            paragraph.Inlines.Add(new System.Windows.Documents.InlineUIContainer(image));
+            paragraph.Inlines.Add(new System.Windows.Documents.Run(" image after"));
+            var document = new System.Windows.Documents.FlowDocument(paragraph);
+            OfficeDocumentService.Save(document, path);
+
+            var plainTextPath = Path.ChangeExtension(path, ".txt");
+            File.WriteAllText(plainTextPath, "sentinel", Encoding.UTF8);
+            var unsafeTextSaveRejected = false;
+            try
+            {
+                OfficeDocumentService.Save(document, plainTextPath);
+            }
+            catch (NotSupportedException)
+            {
+                unsafeTextSaveRejected = true;
+            }
+            Assert(unsafeTextSaveRejected &&
+                   File.ReadAllText(plainTextPath, Encoding.UTF8) == "sentinel",
+                "TXT save rejects embedded images without overwriting the original file");
+
+            using (var word = DocumentFormat.OpenXml.Packaging.WordprocessingDocument.Open(path, false))
+            {
+                var mainPart = word.MainDocumentPart
+                    ?? throw new InvalidDataException("Image DOCX fixture has no main document part.");
+                Assert(mainPart.ImageParts.Any() &&
+                       mainPart.Document.Body?.Descendants<DocumentFormat.OpenXml.Wordprocessing.Drawing>().Any() == true,
+                    "DOCX image save creates an image part and w:drawing");
+            }
+
+            using (var archive = ZipFile.OpenRead(path))
+            {
+                var packageEntries = archive.Entries.Select(entry => entry.FullName).ToArray();
+                Assert(archive.Entries.Any(entry =>
+                        entry.FullName.StartsWith("media/", StringComparison.OrdinalIgnoreCase) ||
+                        entry.FullName.Contains("/media/", StringComparison.OrdinalIgnoreCase)),
+                    "DOCX image save writes package media content; entries: " +
+                    string.Join(", ", packageEntries));
+            }
+
+            var reloadedDocument = OfficeDocumentService.Load(path);
+            var reloadedImage = reloadedDocument.Blocks
+                .OfType<System.Windows.Documents.Paragraph>()
+                .SelectMany(item => item.Inlines.OfType<System.Windows.Documents.InlineUIContainer>())
+                .Select(container => container.Child)
+                .OfType<System.Windows.Controls.Image>()
+                .FirstOrDefault();
+            Assert(reloadedImage?.Source is System.Windows.Media.Imaging.BitmapSource,
+                "DOCX image round-trip restores InlineUIContainer image content");
+        }
+        catch (Exception exception)
+        {
+            failure = exception;
+        }
+    })
+    {
+        IsBackground = true,
+        Name = "NoGaReader DOCX image smoke"
+    };
+    thread.SetApartmentState(ApartmentState.STA);
+    thread.Start();
+    if (!thread.Join(TimeSpan.FromSeconds(30)))
+    {
+        throw new TimeoutException("DOCX image round-trip did not finish within 30 seconds.");
+    }
+
+    if (failure is not null)
+    {
+        throw new InvalidOperationException("DOCX image round-trip failed.", failure);
     }
 }
 

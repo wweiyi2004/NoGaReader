@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 
@@ -5,6 +6,9 @@ namespace NoGaReader.Services;
 
 internal static class JsonFileStore
 {
+    private static readonly ConcurrentDictionary<string, object> FileLocks =
+        new(StringComparer.OrdinalIgnoreCase);
+
     private static readonly JsonSerializerOptions Options = new()
     {
         WriteIndented = true,
@@ -14,36 +18,75 @@ internal static class JsonFileStore
 
     public static T Load<T>(string path, T fallback)
     {
-        try
+        var normalizedPath = NormalizePath(path);
+        lock (FileLocks.GetOrAdd(normalizedPath, static _ => new object()))
         {
-            if (!File.Exists(path))
+            try
+            {
+                if (!File.Exists(normalizedPath))
+                {
+                    return fallback;
+                }
+
+                var json = File.ReadAllText(normalizedPath);
+                return JsonSerializer.Deserialize<T>(json, Options) ?? fallback;
+            }
+            catch (JsonException)
             {
                 return fallback;
             }
-
-            var json = File.ReadAllText(path);
-            return JsonSerializer.Deserialize<T>(json, Options) ?? fallback;
-        }
-        catch (JsonException)
-        {
-            return fallback;
-        }
-        catch (IOException)
-        {
-            return fallback;
-        }
-        catch (UnauthorizedAccessException)
-        {
-            return fallback;
+            catch (IOException)
+            {
+                return fallback;
+            }
+            catch (UnauthorizedAccessException)
+            {
+                return fallback;
+            }
         }
     }
 
     public static void Save<T>(string path, T value)
     {
-        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
-        var temporaryPath = path + ".tmp";
-        var json = JsonSerializer.Serialize(value, Options);
-        File.WriteAllText(temporaryPath, json);
-        File.Move(temporaryPath, path, true);
+        var normalizedPath = NormalizePath(path);
+        lock (FileLocks.GetOrAdd(normalizedPath, static _ => new object()))
+        {
+            var directory = Path.GetDirectoryName(normalizedPath);
+            if (!string.IsNullOrEmpty(directory))
+            {
+                Directory.CreateDirectory(directory);
+            }
+
+            var temporaryPath = Path.Combine(
+                directory ?? string.Empty,
+                $".{Path.GetFileName(normalizedPath)}.{Guid.NewGuid():N}.tmp");
+            try
+            {
+                var json = JsonSerializer.Serialize(value, Options);
+                File.WriteAllText(temporaryPath, json);
+                File.Move(temporaryPath, normalizedPath, true);
+            }
+            finally
+            {
+                try
+                {
+                    File.Delete(temporaryPath);
+                }
+                catch (IOException)
+                {
+                    // A failed cleanup must not hide the original save result.
+                }
+                catch (UnauthorizedAccessException)
+                {
+                    // A failed cleanup must not hide the original save result.
+                }
+            }
+        }
+    }
+
+    private static string NormalizePath(string path)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(path);
+        return Path.GetFullPath(path);
     }
 }

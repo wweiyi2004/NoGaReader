@@ -5,10 +5,12 @@
         Width="1100" Height="760"
         MinWidth="860" MinHeight="560"
         WindowStartupLocation="CenterOwner"
+        Background="{DynamicResource WindowBackgroundBrush}"
+        Foreground="{DynamicResource TextBrush}"
         PreviewKeyDown="Window_PreviewKeyDown"
         Closing="Window_Closing"
         AutomationProperties.Name="文档编辑器">
-    <DockPanel>
+    <DockPanel Background="{DynamicResource WindowBackgroundBrush}">
         <Border DockPanel.Dock="Top" Padding="12,10"
                 Background="{DynamicResource SurfaceAltBrush}"
                 BorderBrush="{DynamicResource BorderBrush}" BorderThickness="0,0,0,1">
@@ -18,7 +20,8 @@
                     <ColumnDefinition Width="Auto"/>
                 </Grid.ColumnDefinitions>
                 <StackPanel>
-                    <TextBlock x:Name="TitleText" Text="未命名文档" FontSize="18" FontWeight="SemiBold"/>
+                    <TextBlock x:Name="TitleText" Text="未命名文档" FontSize="18" FontWeight="SemiBold"
+                               Foreground="{DynamicResource TextBrush}"/>
                     <TextBlock x:Name="PathText" Margin="0,4,0,0" Style="{StaticResource CaptionTextStyle}"
                                Text="尚未保存"/>
                 </StackPanel>
@@ -27,29 +30,53 @@
             </Grid>
         </Border>
 
-        <ToolBarTray DockPanel.Dock="Top">
-            <ToolBar Band="0" BandIndex="0">
-                <Button Content="新建" Click="NewButton_Click" ToolTip="Ctrl+N"/>
-                <Button Content="打开" Click="OpenButton_Click" ToolTip="Ctrl+O"/>
-                <Button Content="保存" Click="SaveButton_Click" ToolTip="Ctrl+S"/>
-                <Button Content="另存为" Click="SaveAsButton_Click"/>
+        <ToolBarTray DockPanel.Dock="Top" Background="{DynamicResource SurfaceAltBrush}">
+            <ToolBar Band="0" BandIndex="0"
+                     Background="{DynamicResource SurfaceAltBrush}"
+                     Foreground="{DynamicResource TextBrush}">
+                <Button Content="新建" Click="NewButton_Click" ToolTip="Ctrl+N"
+                        Foreground="{DynamicResource TextBrush}"/>
+                <Button Content="打开" Click="OpenButton_Click" ToolTip="Ctrl+O"
+                        Foreground="{DynamicResource TextBrush}"/>
+                <Button Content="保存" Click="SaveButton_Click" ToolTip="Ctrl+S"
+                        Foreground="{DynamicResource TextBrush}"/>
+                <Button Content="另存为" Click="SaveAsButton_Click"
+                        Foreground="{DynamicResource TextBrush}"/>
                 <Separator/>
-                <Button Content="撤销" Command="ApplicationCommands.Undo"/>
-                <Button Content="重做" Command="ApplicationCommands.Redo"/>
+                <Button Content="撤销" Command="ApplicationCommands.Undo"
+                        Foreground="{DynamicResource TextBrush}"/>
+                <Button Content="重做" Command="ApplicationCommands.Redo"
+                        Foreground="{DynamicResource TextBrush}"/>
                 <Separator/>
-                <Button Content="剪切" Command="ApplicationCommands.Cut"/>
-                <Button Content="复制" Command="ApplicationCommands.Copy"/>
-                <Button Content="粘贴" Command="ApplicationCommands.Paste"/>
+                <Button Content="剪切" Command="ApplicationCommands.Cut"
+                        Foreground="{DynamicResource TextBrush}"/>
+                <Button Content="复制" Command="ApplicationCommands.Copy"
+                        Foreground="{DynamicResource TextBrush}"/>
+                <Button Content="粘贴" Command="ApplicationCommands.Paste"
+                        Foreground="{DynamicResource TextBrush}"/>
                 <Separator/>
                 <ToggleButton x:Name="BoldButton" Content="B" FontWeight="Bold" Width="32"
-                              Click="BoldButton_Click" ToolTip="粗体"/>
+                              Click="BoldButton_Click" ToolTip="粗体"
+                              Foreground="{DynamicResource TextBrush}"/>
                 <ToggleButton x:Name="ItalicButton" Content="I" FontStyle="Italic" Width="32"
-                              Click="ItalicButton_Click" ToolTip="斜体"/>
+                              Click="ItalicButton_Click" ToolTip="斜体"
+                              Foreground="{DynamicResource TextBrush}"/>
                 <ToggleButton x:Name="UnderlineButton" Content="U" Width="32"
-                              Click="UnderlineButton_Click" ToolTip="下划线"/>
+                              Click="UnderlineButton_Click" ToolTip="下划线"
+                              Foreground="{DynamicResource TextBrush}"/>
                 <Separator/>
-                <Button Content="打印" Click="PrintButton_Click" ToolTip="Ctrl+P"/>
-                <Button Content="查找" Click="FindButton_Click" ToolTip="Ctrl+F"/>
+                <Button Content="插入图片" Click="InsertImageButton_Click"
+                        Foreground="{DynamicResource TextBrush}"/>
+                <Button Content="插入表格" Click="InsertTableButton_Click"
+                        Foreground="{DynamicResource TextBrush}"/>
+                <Separator/>
+                <Button Content="打印" Click="PrintButton_Click" ToolTip="Ctrl+P"
+                        Foreground="{DynamicResource TextBrush}"/>
+                <Button Content="查找" Click="FindButton_Click" ToolTip="Ctrl+F"
+                        Foreground="{DynamicResource TextBrush}"/>
+                <Button Content="转 DOCX" Click="ConvertLegacyButton_Click"
+                        ToolTip="将 DOC/ODT 等先转为 DOCX 再编辑"
+                        Foreground="{DynamicResource TextBrush}"/>
             </ToolBar>
         </ToolBarTray>
 
@@ -68,9 +95,17 @@
                     <TextBox x:Name="FindBox" Width="180" Height="30" Margin="0,0,8,0"
                              VerticalContentAlignment="Center"
                              AutomationProperties.Name="查找文本"/>
-                    <Button Content="查找下一个" Padding="10,6" Click="FindNextButton_Click"/>
+                    <Button Content="查找下一个" Padding="10,6"
+                            Background="{DynamicResource SurfaceBrush}"
+                            BorderBrush="{DynamicResource BorderBrush}"
+                            Foreground="{DynamicResource TextBrush}"
+                            Click="FindNextButton_Click"/>
                 </StackPanel>
-                <Button Grid.Column="2" Content="关闭" Padding="14,7" Click="CloseButton_Click"/>
+                <Button Grid.Column="2" Content="关闭" Padding="14,7"
+                        Background="{DynamicResource SurfaceBrush}"
+                        BorderBrush="{DynamicResource BorderBrush}"
+                        Foreground="{DynamicResource TextBrush}"
+                        Click="CloseButton_Click"/>
             </Grid>
         </Border>
 
@@ -80,6 +115,9 @@
             <RichTextBox x:Name="Editor"
                          BorderThickness="0"
                          AcceptsTab="True"
+                         Background="{DynamicResource SurfaceBrush}"
+                         Foreground="{DynamicResource TextBrush}"
+                         CaretBrush="{DynamicResource TextBrush}"
                          VerticalScrollBarVisibility="Auto"
                          HorizontalScrollBarVisibility="Auto"
                          Padding="8"
@@ -90,6 +128,7 @@
                 <RichTextBox.Resources>
                     <Style TargetType="{x:Type Paragraph}">
                         <Setter Property="Margin" Value="0,0,0,10"/>
+                        <Setter Property="Foreground" Value="{DynamicResource TextBrush}"/>
                     </Style>
                 </RichTextBox.Resources>
             </RichTextBox>

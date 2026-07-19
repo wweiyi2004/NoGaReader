@@ -33,7 +33,14 @@ public sealed class LibraryBook
 
     public bool IsMissing { get; set; }
 
+    /// <summary>
+    /// Comma-separated user tags, e.g. "经典,科幻".
+    /// </summary>
+    public string? Tags { get; set; }
+
     public ReaderLocation? Location { get; set; }
+
+    public string TagsText => string.IsNullOrWhiteSpace(Tags) ? string.Empty : Tags.Trim();
 
     public string ProgressText => IsMissing
         ? "等待重新定位"

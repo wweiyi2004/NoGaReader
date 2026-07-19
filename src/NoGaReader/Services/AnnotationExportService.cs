@@ -251,6 +251,79 @@ public sealed class AnnotationExportService
         };
     }
 
+    public AnnotationExportDocument ReadJsonDocument(string json)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(json);
+        var document = JsonSerializer.Deserialize<AnnotationExportDocument>(json, JsonOptions)
+            ?? throw new InvalidDataException("批注 JSON 无效。");
+        if (document.SchemaVersion is < 1 or > AnnotationExportDocument.CurrentSchemaVersion)
+        {
+            throw new InvalidDataException($"不支持的批注 schema 版本：{document.SchemaVersion}");
+        }
+
+        if (document.Annotations is null)
+        {
+            throw new InvalidDataException("批注 JSON 缺少 annotations 数组。");
+        }
+
+        return document;
+    }
+
+    public IReadOnlyList<Annotation> ToAnnotations(AnnotationExportDocument document, long bookId)
+    {
+        ArgumentNullException.ThrowIfNull(document);
+        var now = _timeProvider.GetUtcNow().UtcDateTime;
+        var results = new List<Annotation>();
+        foreach (var item in document.Annotations)
+        {
+            if (item is null || string.IsNullOrWhiteSpace(item.Kind))
+            {
+                continue;
+            }
+
+            var type = item.Kind.Trim().ToLowerInvariant() switch
+            {
+                "bookmark" => AnnotationType.Bookmark,
+                "highlight" => AnnotationType.Highlight,
+                "note" => AnnotationType.Note,
+                _ => (AnnotationType?)null
+            };
+            if (type is null)
+            {
+                continue;
+            }
+
+            TextAnchor? anchor = null;
+            if (item.TextSelector is { Exact: { Length: > 0 } exact })
+            {
+                anchor = new TextAnchor
+                {
+                    ExactText = exact,
+                    Prefix = item.TextSelector.Prefix,
+                    Suffix = item.TextSelector.Suffix,
+                    Progress = ClampProgress(item.SectionProgress)
+                };
+            }
+
+            results.Add(new Annotation
+            {
+                Id = Guid.NewGuid().ToString("N"),
+                BookId = bookId,
+                Type = type.Value,
+                SectionIndex = Math.Max(0, item.SectionNumber - 1),
+                SectionProgress = ClampProgress(item.SectionProgress),
+                Anchor = anchor,
+                SelectedText = item.Quote,
+                Note = item.Note,
+                Color = item.Color,
+                CreatedUtc = item.CreatedAtUtc == default ? now : item.CreatedAtUtc.UtcDateTime,
+                ModifiedUtc = item.ModifiedAtUtc == default ? now : item.ModifiedAtUtc.UtcDateTime
+            });
+        }
+
+        return results;
+    }
+
     private static AnnotationExportItem ToExportItem(Annotation annotation)
     {
         var anchor = annotation.Anchor;

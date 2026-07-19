@@ -99,5 +99,15 @@ public sealed class AppSettings
 
     public bool SyncIncludeSettings { get; set; } = true;
 
+    /// <summary>
+    /// Last modification time of the settings subset that participates in cloud sync.
+    /// </summary>
+    public DateTimeOffset SyncSettingsModifiedUtc { get; set; } = DateTimeOffset.MinValue;
+
     public string LastSyncUtc { get; set; } = string.Empty;
+
+    /// <summary>
+    /// UI language code. Empty/system means follow OS; currently zh-CN and en-US are recognized.
+    /// </summary>
+    public string UiLanguage { get; set; } = string.Empty;
 }

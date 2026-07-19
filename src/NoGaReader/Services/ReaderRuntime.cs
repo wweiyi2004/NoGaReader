@@ -127,20 +127,59 @@ internal static class ReaderRuntime
                      }
                      body.nogar-reader table { max-width: 100% !important; border-color: var(--nr-rule) !important; }
                      body.nogar-reader pre { max-width: 100%; overflow: auto; white-space: pre-wrap; }
-                     body.nogar-reader ::selection { background: rgba(87, 83, 78, .28); }
-                     mark.nogar-annotation { color: inherit !important; padding: .02em .06em; cursor: pointer;
-                                             border-radius: .18em; box-decoration-break: clone;
-                                             -webkit-box-decoration-break: clone; }
-                     mark.nogar-annotation:hover, mark.nogar-annotation:focus-visible {
-                       outline: 2px solid var(--nr-link); outline-offset: 2px;
-                     }
-                     mark.nogar-yellow { background: rgba(250, 204, 21, .42) !important; }
-                     mark.nogar-green { background: rgba(74, 222, 128, .32) !important; }
-                     mark.nogar-blue { background: rgba(96, 165, 250, .33) !important; }
-                     mark.nogar-pink { background: rgba(244, 114, 182, .30) !important; }
-                     mark.nogar-note { border-bottom: 2px solid var(--nr-link); }
-                     mark.nogar-search-hit { color: inherit !important; background: rgba(249, 115, 22, .42) !important;
-                                             outline: 2px solid rgba(249, 115, 22, .72); border-radius: .18em; }
+                      body.nogar-reader ::selection { background: rgba(87, 83, 78, .28); }
+                      body.nogar-reader sup, body.nogar-reader sub {
+                        font-size: .68em !important; line-height: 0 !important;
+                        vertical-align: super; position: relative; top: -.12em;
+                      }
+                      body.nogar-reader sub { vertical-align: sub; top: .12em; }
+                      body.nogar-reader a[epub\\:type~="noteref"],
+                      body.nogar-reader a[epub\\:type~="footnote"],
+                      body.nogar-reader a.duokan-footnote,
+                      body.nogar-reader a.footnote,
+                      body.nogar-reader a.noteref,
+                      body.nogar-reader span.duokan-footnote,
+                      body.nogar-reader .footnote-ref,
+                      body.nogar-reader .noteref {
+                        font-size: .68em !important; line-height: 1 !important;
+                        font-weight: 600 !important; vertical-align: super;
+                        text-decoration: none !important;
+                      }
+                      mark.nogar-annotation { color: inherit !important; padding: 0 .04em; cursor: pointer;
+                                              border-radius: .12em; box-decoration-break: clone;
+                                              -webkit-box-decoration-break: clone; }
+                      mark.nogar-annotation:hover, mark.nogar-annotation:focus-visible {
+                        outline: 1.5px solid var(--nr-link); outline-offset: 1px;
+                      }
+                      mark.nogar-yellow { background: rgba(250, 204, 21, .42) !important; }
+                      mark.nogar-green { background: rgba(74, 222, 128, .32) !important; }
+                      mark.nogar-blue { background: rgba(96, 165, 250, .33) !important; }
+                      mark.nogar-pink { background: rgba(244, 114, 182, .30) !important; }
+                      mark.nogar-note {
+                        border-bottom: 1.5px solid var(--nr-link);
+                        padding-right: .04em;
+                      }
+                      mark.nogar-note::after {
+                        content: '注';
+                        display: inline-block;
+                        margin-left: .1em;
+                        padding: 0 .16em;
+                        min-width: 0;
+                        height: auto;
+                        line-height: 1.1;
+                        font-size: .48em;
+                        font-weight: 600;
+                        letter-spacing: 0;
+                        vertical-align: .35em;
+                        border-radius: .2em;
+                        color: #fff !important;
+                        background: var(--nr-link) !important;
+                        box-shadow: none;
+                        transform: scale(.92);
+                        transform-origin: left center;
+                      }
+                      mark.nogar-search-hit { color: inherit !important; background: rgba(249, 115, 22, .42) !important;
+                                              outline: 2px solid rgba(249, 115, 22, .72); border-radius: .18em; }
 
                      html.nogar-scrolling { overflow-x: hidden !important; overflow-y: auto !important; }
                      html.nogar-scrolling body.nogar-reader {

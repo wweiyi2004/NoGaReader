@@ -25,6 +25,7 @@ public partial class SyncDialog : Window
         IncludeAnnotationsCheck.IsChecked = settings.SyncIncludeAnnotations;
         IncludeSettingsCheck.IsChecked = settings.SyncIncludeSettings;
         UpdateStatus();
+        Loaded += (_, _) => App.ApplyWindowChromeTheme(this);
     }
 
     private void EnableSyncCheck_Changed(object sender, RoutedEventArgs e) => UpdateStatus();

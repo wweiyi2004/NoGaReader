@@ -13,21 +13,20 @@ NoGaReader 是一个面向 Windows 10/11 的本地免费阅读器。它采用洁
 ## V1.1 重点
 
 - CHM：通过 Windows `hh.exe` 解包为本地 HTML 阅读，解析 `.hhc` 目录。
-- XPS/OXPS：优先提取包内图片进漫画模式；否则经 Calibre 转 PDF。
+- XPS/OXPS：通过 Windows XPS 引擎渲染真实 FixedPage，并忽略包内非页面资源图。
 - DJVU：经 Calibre 或 DjVuLibre `ddjvu` 转为 PDF 阅读。
 - 云同步：可选文件夹/网盘目录同步进度、批注与设置；默认关闭，不同步源书文件。
 
 ## V1.0 重点
 
 - 单实例：二次启动通过命名管道把文件路径交给已运行窗口。
-- 文件关联：侧栏可注册/移除当前用户扩展名关联（电子书、漫画、文档）。
 - 打印：阅读器工具栏调用 WebView2 打印对话框。
 - 漫画 CBT（tar）扩展支持。
 
 ## V0.9 重点
 
 - 文档编辑器：侧栏“文档”入口，支持新建/打开/编辑/保存/另存为/打印/查找。
-- 格式：DOCX（Open XML）、RTF、TXT、HTML 原生编辑；旧版 DOC/ODT 提示先转换。
+- 格式：DOCX（Open XML）、RTF、TXT、HTML 原生编辑；旧版 DOC 提示用 Word/LibreOffice 另存为 DOCX，ODT 可先转换。
 - 打开路由：选择 DOCX/RTF/TXT/HTML 时进入编辑器而非阅读器。
 - 依赖：`DocumentFormat.OpenXml`，无商业文档控件授权。
 
@@ -111,14 +110,14 @@ EPUB、FB2、Markdown 与纯文本支持分页/连续滚动、统一排版和全
 
 ## 当前限制
 
-- MOBI/AZW/AZW3/DJVU/XPS 在缺少引擎时会提示安装 Calibre 或专用工具；CHM 依赖系统 hh.exe。
+- MOBI/AZW/AZW3/DJVU 在缺少引擎时会提示安装 Calibre 或专用工具；XPS/OXPS 使用 Windows 内置渲染；CHM 依赖系统 hh.exe。
 - 高亮和笔记目前用于 EPUB、FB2、Markdown、TXT 等受控可重排内容；尚无 PDF 专用批注层。
 - 精确阅读位置和批注使用 NoGaReader 自己的文本锚点，并以“章节 + 章内归一化进度”兜底，不是 EPUB CFI。正文被替换、重复文本缺少足够上下文或出版社结构变化很大时，旧位置可能退回邻近页面，旧批注也可能无法重新挂载。
 - 全书索引仅处理本地 HTML/XML/纯文本章节，不解析 PDF 正文，也不提供 OCR。单章节最多读取 8 MB，单本书最多读取 64 MB，最多索引 10,000 个章节。
 - 书库当前提供现代封面卡片、阅读进度与基础筛选，尚无标签、分组或手工元数据编辑。
 - 批注目前只支持导出，不支持把 Markdown/JSON 再导入；笔记正文可以编辑，但引用原文和文本锚点没有手工编辑界面。
 - 缺失状态在重新扫描书库后更新，没有常驻文件系统监视器。自动重定位只接受唯一元数据匹配，手动重定位用扩展名和文件大小提示降低误选风险，但两者都不验证文件内容身份。
-- 文件关联支持当前用户注册；尚无 MSIX 安装包与自动更新。格式转换依赖本地 Calibre 运行时。
+- 尚无 MSIX 安装包与自动更新。格式转换依赖本地 Calibre 运行时。
 
 转换引擎优先使用 `engines/calibre` 内嵌运行时，其次用户数据目录与系统 Calibre；应用只调用 `ebook-convert`，不实现自研转换内核。完整 Calibre 二进制可按 GPL 合规方式随发布附带。
 
@@ -139,7 +138,6 @@ WPF / .NET 8 主窗口
 ├─ CalibreConverter / CalibreRuntimeLocator：本地 ebook-convert 探测与批量转换
 ├─ OfficeDocumentService + DocumentEditorDialog：DOCX/RTF/TXT/HTML 编辑与打印
 ├─ SingleInstanceService：单实例与打开文件 IPC
-├─ FileAssociationService：当前用户文件关联
 ├─ CloudSyncService + SyncDialog：可选文件夹云同步
 ├─ ChmLoader / XpsLoader / DjvuLoader：固定版式扩展
 ├─ LibraryScanner：可选递归扫描、EPUB/FB2 元数据与封面

@@ -104,6 +104,45 @@ function Wait-NamedElement {
     throw "Timed out waiting for UI Automation element '$Name'."
 }
 
+function Wait-ProcessWindowContainingElement {
+    param(
+        [Parameter(Mandatory = $true)]
+        [System.Diagnostics.Process]$Process,
+
+        [Parameter(Mandatory = $true)]
+        [string]$ElementName,
+
+        [Parameter(Mandatory = $true)]
+        [datetime]$Deadline
+    )
+
+    $processCondition = New-Object System.Windows.Automation.PropertyCondition(
+        [System.Windows.Automation.AutomationElement]::ProcessIdProperty,
+        $Process.Id)
+    while ([datetime]::UtcNow -lt $Deadline) {
+        if ($Process.HasExited) {
+            throw "NoGaReader exited while waiting for UI Automation element '$ElementName'."
+        }
+
+        $windows = [System.Windows.Automation.AutomationElement]::RootElement.FindAll(
+            [System.Windows.Automation.TreeScope]::Children,
+            $processCondition)
+        foreach ($window in $windows) {
+            $element = Find-NamedElement -Root $window -Name $ElementName
+            if ($null -ne $element) {
+                return [pscustomobject]@{
+                    Window = $window
+                    Element = $element
+                }
+            }
+        }
+
+        Start-Sleep -Milliseconds 100
+    }
+
+    throw "Timed out waiting for a NoGaReader window containing UI Automation element '$ElementName'."
+}
+
 function Invoke-AutomationElement {
     param(
         [Parameter(Mandatory = $true)]
@@ -211,6 +250,7 @@ function Stop-OwnedProcess {
 
 $launchedProcess = $null
 $mainWindow = $null
+$readerWindow = $null
 $runDataRoot = $null
 $succeeded = $false
 $failureMessage = $null
@@ -267,32 +307,48 @@ try {
     $mainWindow = Wait-MainWindow -Process $launchedProcess -Deadline $deadline
     Write-Host "[PASS] Main window appeared: $($mainWindow.Current.Name)"
 
-    $requiredControls = @(
+    $consoleControlNames = @(
         '打开文件',
         '打开漫画图片文件夹',
         '添加书库文件夹',
         '管理书库文件夹',
-        '刷新书库',
+        '刷新书库'
+    )
+    $readerControlNames = @(
         '高亮选中文字',
         '为选中文字添加笔记',
         '在当前位置添加书签',
         '打开书签与笔记'
     )
     if ($isComicFixture) {
-        $requiredControls += '打开漫画模式设置'
+        $readerControlNames += '打开漫画模式设置'
     }
 
     $controls = @{}
-    foreach ($name in $requiredControls) {
+    foreach ($name in $consoleControlNames) {
         $control = Wait-NamedElement -Root $mainWindow -Name $name -Deadline $deadline
+        $controls[$name] = $control
+        Write-Host "[PASS] Found '$name'."
+    }
+
+    $readerMatch = Wait-ProcessWindowContainingElement `
+        -Process $launchedProcess `
+        -ElementName $readerControlNames[0] `
+        -Deadline $deadline
+    $readerWindow = $readerMatch.Window
+    $controls[$readerControlNames[0]] = $readerMatch.Element
+    Write-Host "[PASS] Reader window appeared: $($readerWindow.Current.Name)"
+    Write-Host "[PASS] Found '$($readerControlNames[0])'."
+    foreach ($name in $readerControlNames | Select-Object -Skip 1) {
+        $control = Wait-NamedElement -Root $readerWindow -Name $name -Deadline $deadline
         $controls[$name] = $control
         Write-Host "[PASS] Found '$name'."
     }
 
     Wait-ElementEnabled -Element $controls['打开书签与笔记'] -Name '打开书签与笔记' -Deadline $deadline
     Invoke-AutomationElement -Element $controls['打开书签与笔记'] -Name '打开书签与笔记'
-    $annotationList = Wait-NamedElement -Root $mainWindow -Name '批注列表' -Deadline $deadline
-    $closeAnnotations = Wait-NamedElement -Root $mainWindow -Name '关闭批注面板' -Deadline $deadline
+    $annotationList = Wait-NamedElement -Root $readerWindow -Name '批注列表' -Deadline $deadline
+    $closeAnnotations = Wait-NamedElement -Root $readerWindow -Name '关闭批注面板' -Deadline $deadline
     if (-not $annotationList.Current.IsEnabled) {
         throw "The annotation list is present but not interactive."
     }
@@ -301,7 +357,7 @@ try {
     Invoke-AutomationElement -Element $closeAnnotations -Name '关闭批注面板'
 
     while ([datetime]::UtcNow -lt $deadline) {
-        $closedElement = Find-NamedElement -Root $mainWindow -Name '关闭批注面板'
+        $closedElement = Find-NamedElement -Root $readerWindow -Name '关闭批注面板'
         if ($null -eq $closedElement -or $closedElement.Current.IsOffscreen) {
             break
         }
@@ -309,7 +365,7 @@ try {
         Start-Sleep -Milliseconds 100
     }
 
-    $stillOpen = Find-NamedElement -Root $mainWindow -Name '关闭批注面板'
+    $stillOpen = Find-NamedElement -Root $readerWindow -Name '关闭批注面板'
     if ($null -ne $stillOpen -and -not $stillOpen.Current.IsOffscreen) {
         throw 'The annotation panel did not close after invoking its close button.'
     }
@@ -319,19 +375,19 @@ try {
     if ($isComicFixture) {
         Wait-ElementEnabled -Element $controls['打开漫画模式设置'] -Name '打开漫画模式设置' -Deadline $deadline
         Invoke-AutomationElement -Element $controls['打开漫画模式设置'] -Name '打开漫画模式设置'
-        $comicPageList = Wait-NamedElement -Root $mainWindow -Name '漫画页缩略图' -Deadline $deadline
-        $closeComicPanel = Wait-NamedElement -Root $mainWindow -Name '关闭漫画模式设置' -Deadline $deadline
+        $comicPageList = Wait-NamedElement -Root $readerWindow -Name '漫画页缩略图' -Deadline $deadline
+        $closeComicPanel = Wait-NamedElement -Root $readerWindow -Name '关闭漫画模式设置' -Deadline $deadline
         foreach ($name in @('单页', '双页', '连续', '左 → 右', '右 → 左', '宽', '高', '1:1')) {
-            [void](Wait-NamedElement -Root $mainWindow -Name $name -Deadline $deadline)
+            [void](Wait-NamedElement -Root $readerWindow -Name $name -Deadline $deadline)
         }
         if (-not $comicPageList.Current.IsEnabled) {
             throw 'The comic thumbnail list is present but not interactive.'
         }
 
-        $doubleMode = Wait-NamedElement -Root $mainWindow -Name '双页' -Deadline $deadline
+        $doubleMode = Wait-NamedElement -Root $readerWindow -Name '双页' -Deadline $deadline
         Set-ToggleOn -Element $doubleMode -Name '双页'
         Start-Sleep -Milliseconds 300
-        $nextPage = Wait-NamedElement -Root $mainWindow -Name '下一页' -Deadline $deadline
+        $nextPage = Wait-NamedElement -Root $readerWindow -Name '下一页' -Deadline $deadline
         $pageTurnTested = $false
         if ($nextPage.Current.IsEnabled) {
             Invoke-AutomationElement -Element $nextPage -Name '下一页'
@@ -341,7 +397,7 @@ try {
         else {
             Write-Host '[INFO] Comic fixture has no next page; page-turn action skipped.'
         }
-        $continuousMode = Wait-NamedElement -Root $mainWindow -Name '连续' -Deadline $deadline
+        $continuousMode = Wait-NamedElement -Root $readerWindow -Name '连续' -Deadline $deadline
         Set-ToggleOn -Element $continuousMode -Name '连续'
 
         if ($pageTurnTested) {

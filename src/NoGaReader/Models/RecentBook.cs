@@ -33,7 +33,7 @@ public sealed class RecentBook
         {
             if (!FileExists)
             {
-                return "文件已移动";
+                return Services.UiStrings.IsEnglish ? "File moved" : "文件已移动";
             }
 
             if (SectionCount <= 1)
@@ -41,13 +41,15 @@ public sealed class RecentBook
                 return Kind switch
                 {
                     ReaderDocumentKind.Pdf => "PDF",
-                    ReaderDocumentKind.Image => "图片",
-                    _ => "已打开"
+                    ReaderDocumentKind.Image => Services.UiStrings.IsEnglish ? "Image" : "图片",
+                    _ => Services.UiStrings.IsEnglish ? "Opened" : "已打开"
                 };
             }
 
             var progress = Math.Clamp((SectionIndex + SectionProgress) / SectionCount, 0d, 1d);
-            return $"阅读进度 {progress:P0}";
+            return Services.UiStrings.IsEnglish
+                ? $"Progress {progress:P0}"
+                : $"阅读进度 {progress:P0}";
         }
     }
 }
