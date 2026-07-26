@@ -94,12 +94,9 @@ internal static partial class HtmlDocumentFactory
         {
             localPart = Uri.UnescapeDataString(localPart).Replace('/', Path.DirectorySeparatorChar);
             var sourceDirectory = Path.GetDirectoryName(sourcePath)!;
-            var normalizedRoot = Path.GetFullPath(sourceDirectory)
-                .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar) +
-                Path.DirectorySeparatorChar;
             var imagePath = Path.GetFullPath(Path.Combine(sourceDirectory, localPart));
             var extension = Path.GetExtension(imagePath);
-            if (!imagePath.StartsWith(normalizedRoot, StringComparison.OrdinalIgnoreCase) ||
+            if (!PathSemantics.IsInside(sourceDirectory, imagePath) ||
                 !MarkdownImageExtensions.Contains(extension) ||
                 !File.Exists(imagePath))
             {

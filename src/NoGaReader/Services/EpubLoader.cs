@@ -175,7 +175,7 @@ internal sealed class EpubLoader
         {
             var document = SafeXml.LoadContent(path);
             var blockedElements = document.Descendants()
-                .Where(element => element.Name.LocalName is "script" or "iframe" or "object" or "embed" or "base")
+                .Where(element => IsBlockedElement(element.Name.LocalName))
                 .ToList();
             foreach (var element in blockedElements)
             {
@@ -183,9 +183,12 @@ internal sealed class EpubLoader
             }
 
             var refreshElements = document.Descendants()
-                .Where(element => element.Name.LocalName == "meta" &&
+                .Where(element => string.Equals(element.Name.LocalName, "meta", StringComparison.OrdinalIgnoreCase) &&
                                   string.Equals(
-                                      element.Attributes().FirstOrDefault(attribute => attribute.Name.LocalName == "http-equiv")?.Value,
+                                      element.Attributes().FirstOrDefault(attribute => string.Equals(
+                                          attribute.Name.LocalName,
+                                          "http-equiv",
+                                          StringComparison.OrdinalIgnoreCase))?.Value,
                                       "refresh",
                                       StringComparison.OrdinalIgnoreCase))
                 .ToList();
@@ -199,8 +202,8 @@ internal sealed class EpubLoader
                 var blockedAttributes = element.Attributes()
                     .Where(attribute =>
                         attribute.Name.LocalName.StartsWith("on", StringComparison.OrdinalIgnoreCase) ||
-                        attribute.Name.LocalName is "srcdoc" or "action" or "formaction" ||
-                        (attribute.Name.LocalName is "href" or "src" && IsUnsafeReference(attribute)))
+                        IsBlockedAttribute(attribute.Name.LocalName) ||
+                        (IsReferenceAttribute(attribute.Name.LocalName) && IsUnsafeReference(attribute)))
                     .ToList();
                 foreach (var attribute in blockedAttributes)
                 {
@@ -216,6 +219,22 @@ internal sealed class EpubLoader
             return false;
         }
     }
+
+    private static bool IsBlockedElement(string localName) =>
+        localName.Equals("script", StringComparison.OrdinalIgnoreCase) ||
+        localName.Equals("iframe", StringComparison.OrdinalIgnoreCase) ||
+        localName.Equals("object", StringComparison.OrdinalIgnoreCase) ||
+        localName.Equals("embed", StringComparison.OrdinalIgnoreCase) ||
+        localName.Equals("base", StringComparison.OrdinalIgnoreCase);
+
+    private static bool IsBlockedAttribute(string localName) =>
+        localName.Equals("srcdoc", StringComparison.OrdinalIgnoreCase) ||
+        localName.Equals("action", StringComparison.OrdinalIgnoreCase) ||
+        localName.Equals("formaction", StringComparison.OrdinalIgnoreCase);
+
+    private static bool IsReferenceAttribute(string localName) =>
+        localName.Equals("href", StringComparison.OrdinalIgnoreCase) ||
+        localName.Equals("src", StringComparison.OrdinalIgnoreCase);
 
     private static bool IsActiveContentDocument(string path) =>
         Path.GetExtension(path).ToLowerInvariant() is ".html" or ".htm" or ".xhtml" or ".svg";
@@ -233,7 +252,7 @@ internal sealed class EpubLoader
             return false;
         }
 
-        if (attribute.Name.LocalName == "href")
+        if (attribute.Name.LocalName.Equals("href", StringComparison.OrdinalIgnoreCase))
         {
             return uri.Scheme is not ("http" or "https" or "mailto");
         }
@@ -624,10 +643,7 @@ internal sealed class EpubLoader
             }
 
             var path = Path.GetFullPath(Path.Combine(baseDirectory, localPart));
-            var root = Path.GetFullPath(rootDirectory)
-                .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar) +
-                Path.DirectorySeparatorChar;
-            return path.StartsWith(root, StringComparison.OrdinalIgnoreCase) ? path : null;
+            return PathSemantics.IsInside(rootDirectory, path) ? path : null;
         }
         catch (Exception exception) when (
             exception is ArgumentException or NotSupportedException or UriFormatException)
@@ -645,10 +661,7 @@ internal sealed class EpubLoader
     private static string CombineInside(string root, params string[] parts)
     {
         var path = Path.GetFullPath(parts.Aggregate(root, Path.Combine));
-        var normalizedRoot = Path.GetFullPath(root)
-            .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar) +
-            Path.DirectorySeparatorChar;
-        if (!path.StartsWith(normalizedRoot, StringComparison.OrdinalIgnoreCase))
+        if (!PathSemantics.IsInside(root, path))
         {
             throw new InvalidDataException("EPUB 引用了包外路径。");
         }

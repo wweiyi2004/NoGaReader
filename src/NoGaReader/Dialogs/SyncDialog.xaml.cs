@@ -9,6 +9,7 @@ namespace NoGaReader.Dialogs;
 public partial class SyncDialog : Window
 {
     private readonly AppSettings _settings;
+    private readonly AppSettings _draftSettings;
     private readonly SettingsStore _settingsStore;
     private readonly LibraryDatabase? _database;
     private readonly CloudSyncService _syncService;
@@ -16,9 +17,10 @@ public partial class SyncDialog : Window
     public SyncDialog(AppSettings settings, SettingsStore settingsStore, LibraryDatabase? database)
     {
         _settings = settings;
+        _draftSettings = settings.Clone();
         _settingsStore = settingsStore;
         _database = database;
-        _syncService = new CloudSyncService(settings);
+        _syncService = new CloudSyncService(_draftSettings);
         InitializeComponent();
         EnableSyncCheck.IsChecked = settings.SyncEnabled;
         FolderBox.Text = settings.SyncFolderPath;
@@ -46,16 +48,20 @@ public partial class SyncDialog : Window
 
     private void Save_Click(object sender, RoutedEventArgs e)
     {
-        ApplyToSettings();
+        ApplyToDraftSettings();
+        CommitSyncConfiguration();
         _settingsStore.Save(_settings);
+        _draftSettings.CopyFrom(_settings);
         UpdateStatus();
         StatusText.Text = "设置已保存。\n" + _syncService.StatusText;
     }
 
     private async void SyncNow_Click(object sender, RoutedEventArgs e)
     {
-        ApplyToSettings();
+        ApplyToDraftSettings();
+        CommitSyncConfiguration();
         _settingsStore.Save(_settings);
+        _draftSettings.CopyFrom(_settings);
         if (_database is null)
         {
             MessageBox.Show(this, "书库尚未初始化，无法同步。", "云同步", MessageBoxButton.OK, MessageBoxImage.Warning);
@@ -65,7 +71,13 @@ public partial class SyncDialog : Window
         try
         {
             StatusText.Text = "正在同步…";
-            var result = await _syncService.SynchronizeAsync(_database, _settingsStore);
+            // The sync configuration is committed above, so the actual run works on
+            // the live settings instance: intermediate saves persist concurrent
+            // main-window changes (reading stats, theme) instead of a stale draft,
+            // and downloaded settings apply without a hand-maintained field list.
+            var runService = new CloudSyncService(_settings);
+            var result = await runService.SynchronizeAsync(_database, _settingsStore);
+            _draftSettings.CopyFrom(_settings);
             UpdateStatus();
             StatusText.Text =
                 $"{result.Message}\n上传/本地书籍 {result.UploadedBooks}，更新进度 {result.DownloadedBooks}，合并批注 {result.MergedAnnotations}\n{_syncService.StatusText}";
@@ -81,18 +93,27 @@ public partial class SyncDialog : Window
         }
     }
 
-    private void ApplyToSettings()
+    private void ApplyToDraftSettings()
     {
-        _settings.SyncEnabled = EnableSyncCheck.IsChecked == true;
-        _settings.SyncProvider = _settings.SyncEnabled ? SyncProviderKind.Folder : SyncProviderKind.None;
-        _settings.SyncFolderPath = FolderBox.Text.Trim();
-        _settings.SyncIncludeAnnotations = IncludeAnnotationsCheck.IsChecked == true;
-        _settings.SyncIncludeSettings = IncludeSettingsCheck.IsChecked == true;
+        _draftSettings.SyncEnabled = EnableSyncCheck.IsChecked == true;
+        _draftSettings.SyncProvider = _draftSettings.SyncEnabled ? SyncProviderKind.Folder : SyncProviderKind.None;
+        _draftSettings.SyncFolderPath = FolderBox.Text.Trim();
+        _draftSettings.SyncIncludeAnnotations = IncludeAnnotationsCheck.IsChecked == true;
+        _draftSettings.SyncIncludeSettings = IncludeSettingsCheck.IsChecked == true;
+    }
+
+    private void CommitSyncConfiguration()
+    {
+        _settings.SyncEnabled = _draftSettings.SyncEnabled;
+        _settings.SyncProvider = _draftSettings.SyncProvider;
+        _settings.SyncFolderPath = _draftSettings.SyncFolderPath;
+        _settings.SyncIncludeAnnotations = _draftSettings.SyncIncludeAnnotations;
+        _settings.SyncIncludeSettings = _draftSettings.SyncIncludeSettings;
     }
 
     private void UpdateStatus()
     {
-        ApplyToSettings();
+        ApplyToDraftSettings();
         StatusText.Text = _syncService.StatusText;
     }
 

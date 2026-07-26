@@ -52,11 +52,6 @@ public partial class DocumentEditorDialog : Window
 
     private void OpenButton_Click(object sender, RoutedEventArgs e)
     {
-        if (!ConfirmDiscardChanges())
-        {
-            return;
-        }
-
         var dialog = new OpenFileDialog
         {
             Title = "打开文档",
@@ -70,8 +65,13 @@ public partial class DocumentEditorDialog : Window
         }
     }
 
-    public void OpenPath(string path)
+    public bool OpenPath(string path)
     {
+        if (!ConfirmDiscardChanges())
+        {
+            return false;
+        }
+
         try
         {
             var fullPath = Path.GetFullPath(path);
@@ -86,11 +86,13 @@ public partial class DocumentEditorDialog : Window
             UpdateHeader();
             UpdateStats();
             StatusText.Text = $"已打开 {Path.GetFileName(path)}";
+            return true;
         }
         catch (Exception exception)
         {
             _suppressDirty = false;
             MessageBox.Show(this, exception.Message, "无法打开文档", MessageBoxButton.OK, MessageBoxImage.Error);
+            return false;
         }
     }
 

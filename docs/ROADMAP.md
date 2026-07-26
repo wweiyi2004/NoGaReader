@@ -117,7 +117,7 @@ NoGaReader.exe（WPF 主壳，免费全功能）
 
 ### Phase B — V0.9 完整文档编辑器
 
-**状态：基础已落地（Open XML DOCX/RTF/TXT/HTML 编辑器 + 打印/查找）。商业级排版保真与 DOC/ODT 原生编辑后续增强。**
+**状态：基础已落地（Open XML DOCX/RTF/TXT 编辑器 + 打印/查找；HTML 使用安全只读阅读器）。商业级排版保真与 DOC/ODT/HTML 原生编辑后续增强。**
 
 **目标**：达到竞品“查看文档 / Word 编辑器”级能力，且免费。
 

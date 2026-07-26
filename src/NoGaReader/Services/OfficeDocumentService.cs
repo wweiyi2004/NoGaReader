@@ -35,30 +35,28 @@ namespace NoGaReader.Services;
 public static class OfficeDocumentService
 {
     public static readonly string OpenFilter =
-        "文档|*.docx;*.doc;*.odt;*.rtf;*.txt;*.html;*.htm|" +
+        "文档|*.docx;*.doc;*.odt;*.rtf;*.txt|" +
         "Word 文档|*.docx;*.doc|" +
         "OpenDocument|*.odt|" +
         "RTF|*.rtf|" +
         "文本|*.txt|" +
-        "HTML|*.html;*.htm|" +
         "所有文件|*.*";
 
     public static readonly string SaveFilter =
         "Word 文档 (*.docx)|*.docx|" +
         "RTF (*.rtf)|*.rtf|" +
-        "文本 (*.txt)|*.txt|" +
-        "HTML (*.html)|*.html";
+        "文本 (*.txt)|*.txt";
 
     public static bool IsOfficeDocumentExtension(string extension)
     {
         extension = NormalizeExtension(extension);
-        return extension is ".docx" or ".rtf" or ".txt" or ".html" or ".htm" or ".odt" or ".doc";
+        return extension is ".docx" or ".rtf" or ".txt" or ".odt" or ".doc";
     }
 
     public static bool CanEditNatively(string extension)
     {
         extension = NormalizeExtension(extension);
-        return extension is ".docx" or ".rtf" or ".txt" or ".html" or ".htm";
+        return extension is ".docx" or ".rtf" or ".txt";
     }
 
     public static bool RequiresSafeSaveAs(string path)
@@ -96,7 +94,8 @@ public static class OfficeDocumentService
             ".docx" => LoadDocx(path),
             ".rtf" => LoadRtf(path),
             ".txt" => LoadPlainText(path),
-            ".html" or ".htm" => LoadHtml(path),
+            ".html" or ".htm" => throw new NotSupportedException(
+                "HTML 请使用阅读器安全打开；当前文档编辑器不支持无损 HTML 编辑。"),
             ".doc" => throw new NotSupportedException(
                 "暂不支持直接编辑旧版 .doc。请使用 Microsoft Word 或 LibreOffice 将其另存为 DOCX，再打开编辑。"),
             ".odt" => throw new NotSupportedException(
@@ -135,9 +134,6 @@ public static class OfficeDocumentService
                     break;
                 case ".txt":
                     SavePlainText(document, tempPath);
-                    break;
-                case ".html" or ".htm":
-                    SaveHtml(document, tempPath);
                     break;
                 default:
                     throw new NotSupportedException($"不支持另存为：{extension}");
@@ -866,31 +862,6 @@ public static class OfficeDocumentService
     private static void SavePlainText(FlowDocument document, string path)
     {
         File.WriteAllText(path, GetPlainText(document), new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
-    }
-
-    private static FlowDocument LoadHtml(string path)
-    {
-        var html = File.ReadAllText(path);
-        var document = new FlowDocument();
-        var range = new TextRange(document.ContentStart, document.ContentEnd);
-        using var stream = new MemoryStream(Encoding.UTF8.GetBytes(html));
-        try
-        {
-            range.Load(stream, DataFormats.Html);
-        }
-        catch
-        {
-            return LoadPlainText(path);
-        }
-
-        return document;
-    }
-
-    private static void SaveHtml(FlowDocument document, string path)
-    {
-        var range = new TextRange(document.ContentStart, document.ContentEnd);
-        using var stream = File.Create(path);
-        range.Save(stream, DataFormats.Html);
     }
 
     private static bool ContainsEmbeddedUiElement(FlowDocument document)

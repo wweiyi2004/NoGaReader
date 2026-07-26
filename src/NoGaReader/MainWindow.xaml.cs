@@ -78,6 +78,7 @@ public partial class MainWindow : Window
     private bool _comicReady;
     private bool _initializing = true;
     private bool _isFullScreen;
+    private bool _isClosing;
     private bool _sidebarVisible = true;
     private bool _sidebarVisibleBeforeFullScreen = true;
     private double _zoomFactor;
@@ -293,8 +294,21 @@ public partial class MainWindow : Window
             tab.ZoomFactor = Math.Clamp(recent?.ZoomFactor ?? _settings.ZoomFactor, 0.5, 3.0);
             tab.LocationAnchor = databaseLocation?.Anchor;
             tab.RestoreAnchor = databaseLocation?.Anchor;
-            tab.Fragment = databaseLocation?.Fragment;
-            tab.CurrentPage = session.Kind == ReaderDocumentKind.Comic ? session.CurrentSectionIndex + 1 : 0;
+            var restoredFragment = databaseLocation?.Fragment;
+            var restoredPdfPage = 0;
+            if (session.Kind == ReaderDocumentKind.Pdf)
+            {
+                if (!TryGetPdfPage(restoredFragment, out restoredPdfPage) && recent?.CurrentPage > 0)
+                {
+                    restoredPdfPage = recent.CurrentPage;
+                    restoredFragment = $"page={restoredPdfPage}";
+                }
+            }
+
+            tab.Fragment = restoredFragment;
+            tab.CurrentPage = session.Kind == ReaderDocumentKind.Comic
+                ? session.CurrentSectionIndex + 1
+                : restoredPdfPage;
             tab.PageCount = session.Kind == ReaderDocumentKind.Comic ? session.ComicPages.Count : 0;
             tab.Title = session.Title;
             tab.SourcePath = session.SourcePath;
@@ -304,7 +318,6 @@ public partial class MainWindow : Window
             {
                 UpdateLibraryItem(libraryBook);
             }
-            StartSearchIndexBuild(session, libraryBook);
             RefreshRecentItems();
         }
         catch (OperationCanceledException)
@@ -382,6 +395,7 @@ public partial class MainWindow : Window
         _readerSourcePath = session.SourcePath;
         BeginReadingTracking();
         _currentBook = tab.Book;
+        StartSearchIndexBuild(session, tab.Book);
         _pendingSelection = null;
         _pendingAnnotationJump = null;
         _currentLocationAnchor = tab.LocationAnchor;
@@ -583,6 +597,7 @@ public partial class MainWindow : Window
         {
             // Reader window: pure reading surface + top tools/tabs. No console left rail.
             Title = "阅读窗口 — NoGaReader";
+            _sidebarVisible = false;
             Sidebar.Visibility = Visibility.Collapsed;
             SidebarColumn.Width = new GridLength(0);
             MainContentColumn.Width = new GridLength(1, GridUnitType.Star);
@@ -612,6 +627,7 @@ public partial class MainWindow : Window
         {
             // Shell/console only: library + tools, no empty reader pane.
             Title = "NoGaReader 控制台";
+            _sidebarVisible = true;
             Sidebar.Visibility = Visibility.Visible;
             SidebarColumn.Width = new GridLength(1, GridUnitType.Star);
             MainContentColumn.Width = new GridLength(0);
@@ -877,7 +893,7 @@ public partial class MainWindow : Window
         {
             var environment = await CoreWebView2Environment.CreateAsync(
                 browserExecutableFolder: null,
-                userDataFolder: AppPaths.WebView2Root);
+                userDataFolder: DesktopAppPaths.WebView2Root);
             await ReaderView.EnsureCoreWebView2Async(environment);
 
             var core = ReaderView.CoreWebView2;
@@ -1044,9 +1060,21 @@ public partial class MainWindow : Window
             relativePath.Replace('\\', '/').Split('/').Select(Uri.EscapeDataString));
         _pendingFragment = string.IsNullOrWhiteSpace(fragment) ? null : fragment;
         _navigationRestoreProgress = _sectionProgress;
-        var fragmentSuffix = _pendingFragment is null
-            ? string.Empty
-            : $"#{Uri.EscapeDataString(_pendingFragment)}";
+        string fragmentSuffix;
+        if (_pendingFragment is null)
+        {
+            fragmentSuffix = string.Empty;
+        }
+        else if (_session.Kind == ReaderDocumentKind.Pdf &&
+                 TryGetPdfPage(_pendingFragment, out var pdfPage))
+        {
+            fragmentSuffix = $"#page={pdfPage}";
+        }
+        else
+        {
+            fragmentSuffix = $"#{Uri.EscapeDataString(_pendingFragment)}";
+        }
+
         ReaderView.CoreWebView2.Navigate($"https://{BookHostName}/{encodedPath}{fragmentSuffix}");
         CurrentSectionText.Text = _session.CurrentSection.Title;
         UpdateReaderControls();
@@ -1115,6 +1143,11 @@ public partial class MainWindow : Window
             _pendingFragment = string.IsNullOrWhiteSpace(uri.Fragment)
                 ? null
                 : Uri.UnescapeDataString(uri.Fragment.TrimStart('#'));
+            if (_session.Kind == ReaderDocumentKind.Pdf &&
+                TryGetPdfPage(_pendingFragment, out var pdfPage))
+            {
+                _currentPage = pdfPage;
+            }
         }
         catch (Exception exception) when (exception is ArgumentException or NotSupportedException)
         {
@@ -1636,6 +1669,42 @@ public partial class MainWindow : Window
         StatusText.Text = "当前文档不支持页码跳转";
     }
 
+    private static bool TryGetPdfPage(string? fragment, out int page)
+    {
+        page = 0;
+        if (string.IsNullOrWhiteSpace(fragment))
+        {
+            return false;
+        }
+
+        var normalized = fragment.Trim().TrimStart('#');
+        try
+        {
+            normalized = Uri.UnescapeDataString(normalized);
+        }
+        catch (UriFormatException)
+        {
+            // Keep the original fragment and let the bounded parser reject it.
+        }
+
+        foreach (var component in normalized.Split('&', StringSplitOptions.RemoveEmptyEntries))
+        {
+            var separator = component.IndexOf('=');
+            if (separator <= 0 ||
+                !component[..separator].Equals("page", StringComparison.OrdinalIgnoreCase) ||
+                !int.TryParse(component[(separator + 1)..], out var parsedPage) ||
+                parsedPage <= 0)
+            {
+                continue;
+            }
+
+            page = parsedPage;
+            return true;
+        }
+
+        return false;
+    }
+
     private async Task JumpFixedLayoutPageAsync(int page)
     {
         if (!_webViewReady || ReaderView.CoreWebView2 is null || _session is null)
@@ -1652,12 +1721,19 @@ public partial class MainWindow : Window
                 relativePath.Replace('\\', '/').Split('/').Select(Uri.EscapeDataString));
             ReaderView.CoreWebView2.Navigate($"https://{BookHostName}/{encodedPath}#page={page}");
             _currentPage = page;
+            if (_session.Kind == ReaderDocumentKind.Pdf)
+            {
+                _pendingFragment = $"page={page}";
+            }
+
             if (_pageCount > 0)
             {
                 _pageCount = Math.Max(_pageCount, page);
             }
 
             UpdateReaderControls();
+            SaveReadingState();
+            SnapshotActiveTabFromSession();
             StatusText.Text = $"已请求跳到第 {page} 页";
         }
         catch (Exception)
@@ -1718,7 +1794,11 @@ public partial class MainWindow : Window
 
     private async Task SyncPdfLocationAsync()
     {
-        if (_session?.Kind != ReaderDocumentKind.Pdf || !_webViewReady || ReaderView.CoreWebView2 is null)
+        var session = _session;
+        if (_isClosing ||
+            session?.Kind != ReaderDocumentKind.Pdf ||
+            !_webViewReady ||
+            ReaderView.CoreWebView2 is null)
         {
             return;
         }
@@ -1756,11 +1836,17 @@ public partial class MainWindow : Window
             }
 
             using var payload = JsonDocument.Parse(text);
+            if (_isClosing || !ReferenceEquals(_session, session))
+            {
+                return;
+            }
+
             if (payload.RootElement.TryGetProperty("page", out var pageElement) &&
                 pageElement.TryGetInt32(out var page) &&
                 page > 0)
             {
                 _currentPage = page;
+                _pendingFragment = $"page={page}";
             }
 
             if (payload.RootElement.TryGetProperty("pages", out var pagesElement) &&
@@ -2077,6 +2163,12 @@ public partial class MainWindow : Window
             {
                 // There is no stable comic document to query while navigating.
             }
+            return;
+        }
+
+        if (_session?.Kind == ReaderDocumentKind.Pdf && _webViewReady)
+        {
+            await SyncPdfLocationAsync();
             return;
         }
 
@@ -4946,8 +5038,24 @@ public partial class MainWindow : Window
         FlushActiveReadingTime();
     }
 
-    private void ReadingStatsTimer_Tick(object? sender, EventArgs e)
+    private async void ReadingStatsTimer_Tick(object? sender, EventArgs e)
     {
+        if (_isClosing)
+        {
+            return;
+        }
+
+        if (_session?.Kind == ReaderDocumentKind.Pdf)
+        {
+            await SyncPdfLocationAsync();
+            if (_isClosing)
+            {
+                return;
+            }
+
+            SaveReadingState();
+        }
+
         FlushActiveReadingTime();
         BeginReadingTracking();
     }
@@ -5119,6 +5227,9 @@ public partial class MainWindow : Window
         {
             BookId = _currentBook.Id,
             SectionIndex = _session.CurrentSectionIndex,
+            Fragment = _session.Kind == ReaderDocumentKind.Pdf && _currentPage > 0
+                ? $"page={_currentPage}"
+                : _pendingFragment,
             SectionProgress = Math.Clamp(_sectionProgress, 0, 1),
             DocumentProgress = Math.Clamp(
                 (_session.CurrentSectionIndex + _sectionProgress) / total,
@@ -5185,7 +5296,8 @@ public partial class MainWindow : Window
                 _session,
                 _session.CurrentSectionIndex,
                 _sectionProgress,
-                _zoomFactor);
+                _zoomFactor,
+                _currentPage);
         }
 
         _settings.ZoomFactor = _zoomFactor;
@@ -5256,36 +5368,7 @@ public partial class MainWindow : Window
         }
     }
 
-    private static AppSettings CloneSettings(AppSettings source) => new()
-    {
-        Theme = source.Theme,
-        ZoomFactor = source.ZoomFactor,
-        ReaderTheme = source.ReaderTheme,
-        ReaderThemePreferenceInitialized = source.ReaderThemePreferenceInitialized,
-        ReaderFlow = source.ReaderFlow,
-        ReaderFontSize = source.ReaderFontSize,
-        UsePublisherFont = source.UsePublisherFont,
-        ReaderLineHeight = source.ReaderLineHeight,
-        ReaderContentWidth = source.ReaderContentWidth,
-        ComicDisplay = source.ComicDisplay,
-        ComicDirection = source.ComicDirection,
-        ComicFit = source.ComicFit,
-        ComicCoverSinglePage = source.ComicCoverSinglePage,
-        ComicScale = source.ComicScale,
-        TotalReadingSeconds = source.TotalReadingSeconds,
-        ReadingDates = [.. source.ReadingDates],
-        CalibreEbookConvertPath = source.CalibreEbookConvertPath,
-        ConversionOutputDirectory = source.ConversionOutputDirectory,
-        ConversionDefaultTargetExtension = source.ConversionDefaultTargetExtension,
-        SyncEnabled = source.SyncEnabled,
-        SyncProvider = source.SyncProvider,
-        SyncFolderPath = source.SyncFolderPath,
-        SyncIncludeAnnotations = source.SyncIncludeAnnotations,
-        SyncIncludeSettings = source.SyncIncludeSettings,
-        LastSyncUtc = source.LastSyncUtc,
-        SyncSettingsModifiedUtc = source.SyncSettingsModifiedUtc,
-        UiLanguage = source.UiLanguage
-    };
+    private static AppSettings CloneSettings(AppSettings source) => source.Clone();
 
     private void SetLoading(bool loading, string? message = null)
     {
@@ -5410,6 +5493,17 @@ public partial class MainWindow : Window
 
     private void Window_Closing(object? sender, CancelEventArgs e)
     {
+        if (_documentEditorDialog is { IsLoaded: true } documentEditor)
+        {
+            documentEditor.Close();
+            if (documentEditor.IsLoaded)
+            {
+                e.Cancel = true;
+                return;
+            }
+        }
+
+        _isClosing = true;
         if (_readerSettingsDialog is { } settingsDialog)
         {
             try

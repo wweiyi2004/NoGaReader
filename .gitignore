@@ -7,6 +7,7 @@ artifacts/
 .nuget-packages/
 .build-temp/
 .tmp/
+tmp/
 .qa/
 *.user
 *.suo

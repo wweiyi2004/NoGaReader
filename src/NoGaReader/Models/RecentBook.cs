@@ -18,6 +18,8 @@ public sealed class RecentBook
 
     public double SectionProgress { get; set; }
 
+    public int CurrentPage { get; set; }
+
     public double ZoomFactor { get; set; } = 1.0;
 
     [JsonIgnore]
@@ -40,6 +42,9 @@ public sealed class RecentBook
             {
                 return Kind switch
                 {
+                    ReaderDocumentKind.Pdf when CurrentPage > 0 => Services.UiStrings.IsEnglish
+                        ? $"PDF · Page {CurrentPage}"
+                        : $"PDF · 第 {CurrentPage} 页",
                     ReaderDocumentKind.Pdf => "PDF",
                     ReaderDocumentKind.Image => Services.UiStrings.IsEnglish ? "Image" : "图片",
                     _ => Services.UiStrings.IsEnglish ? "Opened" : "已打开"

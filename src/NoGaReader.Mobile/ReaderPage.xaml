@@ -1,0 +1,179 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<ContentPage xmlns="http://schemas.microsoft.com/dotnet/2021/maui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2009/xaml"
+             x:Class="NoGaReader.Mobile.ReaderPage"
+             NavigationPage.HasNavigationBar="False"
+             BackgroundColor="{AppThemeBinding Light={StaticResource AppBackground}, Dark={StaticResource AppBackgroundDark}}">
+
+    <ContentPage.Resources>
+        <Style x:Key="ReaderActionButton" TargetType="Button">
+            <Setter Property="BackgroundColor" Value="Transparent" />
+            <Setter Property="TextColor" Value="{AppThemeBinding Light={StaticResource TextSecondary}, Dark={StaticResource TextSecondaryDark}}" />
+            <Setter Property="FontSize" Value="12" />
+            <Setter Property="Padding" Value="10,4" />
+            <Setter Property="HeightRequest" Value="40" />
+            <Setter Property="MinimumHeightRequest" Value="40" />
+            <Setter Property="CornerRadius" Value="10" />
+        </Style>
+        <Style x:Key="ReaderNavigationButton" TargetType="Button">
+            <Setter Property="BackgroundColor" Value="{AppThemeBinding Light={StaticResource PrimarySoft}, Dark={StaticResource PrimarySoftDark}}" />
+            <Setter Property="TextColor" Value="{AppThemeBinding Light={StaticResource Primary}, Dark={StaticResource PrimaryDark}}" />
+            <Setter Property="FontFamily" Value="OpenSansSemibold" />
+            <Setter Property="FontSize" Value="13" />
+            <Setter Property="Padding" Value="14,6" />
+            <Setter Property="HeightRequest" Value="42" />
+            <Setter Property="MinimumHeightRequest" Value="42" />
+            <Setter Property="CornerRadius" Value="12" />
+        </Style>
+    </ContentPage.Resources>
+
+    <Grid x:Name="ReaderRoot" RowDefinitions="Auto,Auto,*,Auto">
+        <Border Padding="10,8"
+                BackgroundColor="{AppThemeBinding Light={StaticResource Surface}, Dark={StaticResource SurfaceDark}}"
+                StrokeThickness="0">
+            <Grid ColumnDefinitions="44,*,44" ColumnSpacing="8">
+                <Button Text="‹"
+                        Clicked="OnBackClicked"
+                        BackgroundColor="Transparent"
+                        TextColor="{AppThemeBinding Light={StaticResource TextPrimary}, Dark={StaticResource TextPrimaryDark}}"
+                        FontSize="31"
+                        Padding="0"
+                        HeightRequest="44"
+                        WidthRequest="44"
+                        SemanticProperties.Description="返回书库" />
+
+                <VerticalStackLayout Grid.Column="1"
+                                     Spacing="0"
+                                     VerticalOptions="Center">
+                    <Label x:Name="ReaderTitle"
+                           FontFamily="OpenSansSemibold"
+                           FontSize="16"
+                           MaxLines="1"
+                           LineBreakMode="TailTruncation"
+                           HorizontalTextAlignment="Center"
+                           TextColor="{AppThemeBinding Light={StaticResource TextPrimary}, Dark={StaticResource TextPrimaryDark}}" />
+                    <Label x:Name="ReaderSubtitle"
+                           FontSize="11"
+                           MaxLines="1"
+                           LineBreakMode="TailTruncation"
+                           HorizontalTextAlignment="Center"
+                           TextColor="{AppThemeBinding Light={StaticResource TextTertiary}, Dark={StaticResource TextTertiaryDark}}" />
+                </VerticalStackLayout>
+
+                <Button Grid.Column="2"
+                        x:Name="DisplayButton"
+                        Text="Aa"
+                        Clicked="OnDisplayClicked"
+                        BackgroundColor="Transparent"
+                        TextColor="{AppThemeBinding Light={StaticResource Primary}, Dark={StaticResource PrimaryDark}}"
+                        FontFamily="OpenSansSemibold"
+                        FontSize="16"
+                        Padding="0"
+                        HeightRequest="44"
+                        WidthRequest="44"
+                        SemanticProperties.Description="阅读显示设置" />
+            </Grid>
+        </Border>
+
+        <Border Grid.Row="1"
+                Padding="10,5"
+                BackgroundColor="{AppThemeBinding Light=#FAF9F7, Dark=#1A1A1A}"
+                Stroke="{AppThemeBinding Light={StaticResource Outline}, Dark={StaticResource OutlineDark}}"
+                StrokeThickness="1">
+            <Grid ColumnDefinitions="*,Auto,Auto,Auto" ColumnSpacing="2">
+                <Picker x:Name="ContentsPicker"
+                        Title="选择章节"
+                        SelectedIndexChanged="OnContentsChanged"
+                        FontSize="12"
+                        HeightRequest="40"
+                        VerticalOptions="Center" />
+                <Button Grid.Column="1"
+                        x:Name="SearchButton"
+                        Text="搜索"
+                        Style="{StaticResource ReaderActionButton}"
+                        Clicked="OnSearchClicked" />
+                <Button Grid.Column="2"
+                        Text="书签"
+                        Style="{StaticResource ReaderActionButton}"
+                        Clicked="OnBookmarkClicked" />
+                <Button Grid.Column="3"
+                        x:Name="AnnotationButton"
+                        Text="批注"
+                        Style="{StaticResource ReaderActionButton}"
+                        Clicked="OnAnnotationClicked" />
+            </Grid>
+        </Border>
+
+        <!-- Reading canvas defaults to the desktop ReaderCanvas tone; ApplyChromeTheme keeps it in sync. -->
+        <Grid Grid.Row="2" x:Name="ReadingSurface" BackgroundColor="#EBEAE6">
+            <Grid x:Name="WebViewHost"
+                  IsVisible="False" />
+
+            <ScrollView x:Name="ImageScroller"
+                        IsVisible="False"
+                        Orientation="Both"
+                        BackgroundColor="#121212">
+                <Image x:Name="PageImage"
+                       Margin="8"
+                       Aspect="AspectFit" />
+            </ScrollView>
+
+            <ActivityIndicator x:Name="LoadingIndicator"
+                               IsRunning="True"
+                               WidthRequest="36"
+                               HeightRequest="36"
+                               HorizontalOptions="Center"
+                               VerticalOptions="Center" />
+
+            <VerticalStackLayout x:Name="ReaderErrorState"
+                                 IsVisible="False"
+                                 Padding="30"
+                                 WidthRequest="310"
+                                 Spacing="10"
+                                 HorizontalOptions="Center"
+                                 VerticalOptions="Center">
+                <Label Text="无法显示这本书"
+                       FontFamily="OpenSansSemibold"
+                       FontSize="20"
+                       HorizontalTextAlignment="Center" />
+                <Label x:Name="ReaderErrorMessage"
+                       FontSize="13"
+                       HorizontalTextAlignment="Center"
+                       TextColor="{AppThemeBinding Light={StaticResource TextSecondary}, Dark={StaticResource TextSecondaryDark}}" />
+                <Button Text="重新加载"
+                        Clicked="OnRetryClicked"
+                        Margin="50,8,50,0"
+                        CornerRadius="20" />
+            </VerticalStackLayout>
+        </Grid>
+
+        <Grid Grid.Row="3"
+              RowDefinitions="3,Auto"
+              BackgroundColor="{AppThemeBinding Light={StaticResource Surface}, Dark={StaticResource SurfaceDark}}">
+            <ProgressBar x:Name="ReadingProgress"
+                         Progress="0"
+                         HeightRequest="3" />
+            <Grid Grid.Row="1"
+                  ColumnDefinitions="Auto,*,Auto"
+                  Padding="12,9"
+                  ColumnSpacing="10">
+                <Button x:Name="PreviousButton"
+                        Text="‹ 上一章"
+                        Style="{StaticResource ReaderNavigationButton}"
+                        Clicked="OnPreviousClicked" />
+                <Label x:Name="PositionLabel"
+                       Grid.Column="1"
+                       HorizontalOptions="Center"
+                       VerticalOptions="Center"
+                       FontFamily="OpenSansSemibold"
+                       FontSize="12"
+                       TextColor="{AppThemeBinding Light={StaticResource TextSecondary}, Dark={StaticResource TextSecondaryDark}}" />
+                <Button x:Name="NextButton"
+                        Grid.Column="2"
+                        Text="下一章 ›"
+                        Style="{StaticResource ReaderNavigationButton}"
+                        Clicked="OnNextClicked" />
+            </Grid>
+        </Grid>
+    </Grid>
+</ContentPage>

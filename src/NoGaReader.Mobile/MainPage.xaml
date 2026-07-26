@@ -1,0 +1,253 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<ContentPage xmlns="http://schemas.microsoft.com/dotnet/2021/maui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2009/xaml"
+             xmlns:local="clr-namespace:NoGaReader.Mobile.Models"
+             x:Class="NoGaReader.Mobile.MainPage"
+             NavigationPage.HasNavigationBar="False"
+             BackgroundColor="{AppThemeBinding Light={StaticResource AppBackground}, Dark={StaticResource AppBackgroundDark}}">
+
+    <Grid RowDefinitions="Auto,Auto,*">
+        <Grid Padding="20,18,20,12" ColumnDefinitions="*,Auto">
+            <VerticalStackLayout Spacing="2" VerticalOptions="Center">
+                <Label Text="我的书库"
+                       FontFamily="OpenSansSemibold"
+                       FontSize="27"
+                       TextColor="{AppThemeBinding Light={StaticResource TextPrimary}, Dark={StaticResource TextPrimaryDark}}" />
+                <Label x:Name="LibrarySummary"
+                       Text="正在加载书库…"
+                       FontSize="13"
+                       TextColor="{AppThemeBinding Light={StaticResource TextSecondary}, Dark={StaticResource TextSecondaryDark}}" />
+            </VerticalStackLayout>
+
+            <Button Grid.Column="1"
+                    Text="＋  导入"
+                    Clicked="OnImportClicked"
+                    FontFamily="OpenSansSemibold"
+                    CornerRadius="22"
+                    HeightRequest="44"
+                    Padding="18,0"
+                    VerticalOptions="Center"
+                    SemanticProperties.Description="从手机文件中导入书籍" />
+        </Grid>
+
+        <Grid Grid.Row="1" Padding="20,4,20,14" RowDefinitions="Auto,Auto,Auto" RowSpacing="10">
+            <Border Padding="12,0"
+                    HeightRequest="48"
+                    BackgroundColor="{AppThemeBinding Light={StaticResource Surface}, Dark={StaticResource SurfaceDark}}"
+                    Stroke="{AppThemeBinding Light={StaticResource Outline}, Dark={StaticResource OutlineDark}}"
+                    StrokeThickness="1"
+                    StrokeShape="RoundRectangle 14">
+                <Grid ColumnDefinitions="Auto,*" ColumnSpacing="10">
+                    <Label Text="⌕"
+                           FontSize="27"
+                           VerticalOptions="Center"
+                           TextColor="{AppThemeBinding Light={StaticResource TextSecondary}, Dark={StaticResource TextSecondaryDark}}" />
+                    <Entry Grid.Column="1"
+                           x:Name="LibrarySearch"
+                           Placeholder="搜索书名或作者"
+                           ReturnType="Search"
+                           ClearButtonVisibility="WhileEditing"
+                           TextChanged="OnSearchChanged"
+                           BackgroundColor="Transparent"
+                           FontSize="15"
+                           VerticalOptions="Center" />
+                </Grid>
+            </Border>
+
+            <Label Grid.Row="1"
+                   Text="EPUB  ·  PDF  ·  TXT  ·  FB2  ·  CBZ  ·  图片"
+                   FontSize="11"
+                   CharacterSpacing="0.4"
+                   TextColor="{AppThemeBinding Light={StaticResource TextTertiary}, Dark={StaticResource TextTertiaryDark}}" />
+
+            <Border Grid.Row="2"
+                    x:Name="ContinueCard"
+                    IsVisible="False"
+                    Padding="16,13"
+                    BackgroundColor="{AppThemeBinding Light={StaticResource PrimarySoft}, Dark={StaticResource PrimarySoftDark}}"
+                    StrokeThickness="0"
+                    StrokeShape="RoundRectangle 16">
+                <Grid ColumnDefinitions="*,Auto" ColumnSpacing="12">
+                    <VerticalStackLayout Spacing="3" VerticalOptions="Center">
+                        <Label Text="继续上次阅读"
+                               FontFamily="OpenSansSemibold"
+                               FontSize="11"
+                               CharacterSpacing="0.4"
+                               TextColor="{AppThemeBinding Light={StaticResource Primary}, Dark={StaticResource PrimaryDark}}" />
+                        <Label x:Name="ContinueTitle"
+                               FontFamily="OpenSansSemibold"
+                               FontSize="15"
+                               MaxLines="1"
+                               LineBreakMode="TailTruncation"
+                               TextColor="{AppThemeBinding Light={StaticResource TextPrimary}, Dark={StaticResource TextPrimaryDark}}" />
+                        <Label x:Name="ContinueProgress"
+                               FontSize="12"
+                               TextColor="{AppThemeBinding Light={StaticResource TextSecondary}, Dark={StaticResource TextSecondaryDark}}" />
+                    </VerticalStackLayout>
+                    <Button Grid.Column="1"
+                            Text="继续阅读"
+                            Clicked="OnContinueClicked"
+                            FontFamily="OpenSansSemibold"
+                            FontSize="13"
+                            CornerRadius="12"
+                            HeightRequest="40"
+                            Padding="16,0"
+                            VerticalOptions="Center" />
+                </Grid>
+            </Border>
+        </Grid>
+
+        <Grid Grid.Row="2">
+            <RefreshView x:Name="RefreshContainer"
+                         Margin="20,0"
+                         Refreshing="OnRefreshing">
+                <CollectionView x:Name="BooksView"
+                                SelectionMode="Single"
+                                SelectionChanged="OnBookSelected"
+                                ItemSizingStrategy="MeasureFirstItem">
+                    <CollectionView.ItemsLayout>
+                        <LinearItemsLayout Orientation="Vertical" ItemSpacing="10" />
+                    </CollectionView.ItemsLayout>
+                    <CollectionView.ItemTemplate>
+                        <DataTemplate x:DataType="local:LibraryBookItem">
+                            <SwipeView>
+                                <SwipeView.RightItems>
+                                    <SwipeItems Mode="Execute">
+                                        <SwipeItem Text="删除"
+                                                   BackgroundColor="{AppThemeBinding Light={StaticResource Danger}, Dark={StaticResource DangerDark}}"
+                                                   CommandParameter="{Binding .}"
+                                                   Invoked="OnDeleteInvoked" />
+                                    </SwipeItems>
+                                </SwipeView.RightItems>
+
+                                <Border Padding="12"
+                                        MinimumHeightRequest="104"
+                                        BackgroundColor="{AppThemeBinding Light={StaticResource Surface}, Dark={StaticResource SurfaceDark}}"
+                                        Stroke="{AppThemeBinding Light={StaticResource Outline}, Dark={StaticResource OutlineDark}}"
+                                        StrokeThickness="1"
+                                        StrokeShape="RoundRectangle 18">
+                                    <Grid ColumnDefinitions="62,*" ColumnSpacing="14">
+                                        <!-- Cover placeholder mirrors desktop: muted surface + accent glyph,
+                                             no per-format tint colors. -->
+                                        <Border WidthRequest="62"
+                                                HeightRequest="80"
+                                                StrokeThickness="0"
+                                                BackgroundColor="{AppThemeBinding Light={StaticResource SurfaceAlt}, Dark={StaticResource SurfaceAltDark}}"
+                                                StrokeShape="RoundRectangle 10">
+                                            <Grid>
+                                                <Label Text="书"
+                                                       IsVisible="{Binding HasFallbackCover}"
+                                                       FontFamily="OpenSansSemibold"
+                                                       FontSize="22"
+                                                       TextColor="{AppThemeBinding Light={StaticResource Primary}, Dark={StaticResource PrimaryDark}}"
+                                                       HorizontalOptions="Center"
+                                                       VerticalOptions="Center" />
+                                                <Image Source="{Binding CoverPath}"
+                                                       IsVisible="{Binding HasCover}"
+                                                       Aspect="AspectFill" />
+                                            </Grid>
+                                        </Border>
+
+                                        <Grid Grid.Column="1" RowDefinitions="Auto,Auto,*,Auto" RowSpacing="3">
+                                            <Label Text="{Binding Title}"
+                                                   FontFamily="OpenSansSemibold"
+                                                   FontSize="17"
+                                                   MaxLines="2"
+                                                   LineBreakMode="TailTruncation"
+                                                   TextColor="{AppThemeBinding Light={StaticResource TextPrimary}, Dark={StaticResource TextPrimaryDark}}" />
+                                            <Label Grid.Row="1"
+                                                   Text="{Binding Author}"
+                                                   FontSize="13"
+                                                   LineBreakMode="TailTruncation"
+                                                   TextColor="{AppThemeBinding Light={StaticResource TextSecondary}, Dark={StaticResource TextSecondaryDark}}" />
+                                            <Grid Grid.Row="3" ColumnDefinitions="Auto,*,Auto" ColumnSpacing="10">
+                                                <!-- Format badge matches the desktop library row: muted chip + accent text. -->
+                                                <Border Padding="7,2"
+                                                        StrokeThickness="0"
+                                                        BackgroundColor="{AppThemeBinding Light={StaticResource SurfaceAlt}, Dark={StaticResource SurfaceAltDark}}"
+                                                        StrokeShape="RoundRectangle 6"
+                                                        VerticalOptions="Center">
+                                                    <Label Text="{Binding FormatLabel}"
+                                                           FontFamily="OpenSansSemibold"
+                                                           FontSize="10"
+                                                           TextColor="{AppThemeBinding Light={StaticResource Primary}, Dark={StaticResource PrimaryDark}}" />
+                                                </Border>
+                                                <ProgressBar Grid.Column="1"
+                                                             Progress="{Binding Progress}"
+                                                             HeightRequest="3"
+                                                             VerticalOptions="Center" />
+                                                <Label Grid.Column="2"
+                                                       Text="{Binding ProgressText}"
+                                                       FontSize="11"
+                                                       TextColor="{AppThemeBinding Light={StaticResource TextTertiary}, Dark={StaticResource TextTertiaryDark}}" />
+                                            </Grid>
+                                        </Grid>
+                                    </Grid>
+                                </Border>
+                            </SwipeView>
+                        </DataTemplate>
+                    </CollectionView.ItemTemplate>
+                </CollectionView>
+            </RefreshView>
+
+            <VerticalStackLayout x:Name="EmptyState"
+                                 IsVisible="False"
+                                 WidthRequest="280"
+                                 Spacing="10"
+                                 HorizontalOptions="Center"
+                                 VerticalOptions="Center"
+                                 TranslationY="-24">
+                <Border WidthRequest="76"
+                        HeightRequest="76"
+                        BackgroundColor="{AppThemeBinding Light={StaticResource PrimarySoft}, Dark={StaticResource PrimarySoftDark}}"
+                        StrokeThickness="0"
+                        StrokeShape="RoundRectangle 24"
+                        HorizontalOptions="Center">
+                    <Label Text="书"
+                           FontFamily="OpenSansSemibold"
+                           FontSize="28"
+                           TextColor="{AppThemeBinding Light={StaticResource Primary}, Dark={StaticResource PrimaryDark}}"
+                           HorizontalOptions="Center"
+                           VerticalOptions="Center" />
+                </Border>
+                <Label x:Name="EmptyTitle"
+                       Text="书库还是空的"
+                       FontFamily="OpenSansSemibold"
+                       FontSize="20"
+                       HorizontalTextAlignment="Center"
+                       TextColor="{AppThemeBinding Light={StaticResource TextPrimary}, Dark={StaticResource TextPrimaryDark}}" />
+                <Label x:Name="EmptyDescription"
+                       Text="从手机中选择一本书，导入后即可离线阅读。"
+                       FontSize="13"
+                       HorizontalTextAlignment="Center"
+                       TextColor="{AppThemeBinding Light={StaticResource TextSecondary}, Dark={StaticResource TextSecondaryDark}}" />
+                <Button Text="选择书籍"
+                        Clicked="OnImportClicked"
+                        Margin="42,8"
+                        CornerRadius="22" />
+            </VerticalStackLayout>
+
+            <Grid x:Name="BusyOverlay"
+                  IsVisible="False"
+                  BackgroundColor="{AppThemeBinding Light=#C8F5F4F2, Dark=#C8141414}"
+                  InputTransparent="False">
+                <Border Padding="22,18"
+                        BackgroundColor="{AppThemeBinding Light={StaticResource Surface}, Dark={StaticResource SurfaceDark}}"
+                        StrokeThickness="0"
+                        StrokeShape="RoundRectangle 18"
+                        HorizontalOptions="Center"
+                        VerticalOptions="Center">
+                    <HorizontalStackLayout Spacing="12">
+                        <ActivityIndicator IsRunning="True"
+                                           WidthRequest="24"
+                                           HeightRequest="24" />
+                        <Label x:Name="BusyLabel"
+                               Text="正在处理…"
+                               VerticalOptions="Center"
+                               FontSize="14" />
+                    </HorizontalStackLayout>
+                </Border>
+            </Grid>
+        </Grid>
+    </Grid>
+</ContentPage>

@@ -17,6 +17,17 @@ var generatedSources = new List<(string Path, string Category)>();
 try
 {
     var loader = new DocumentLoader();
+    Assert(typeof(AppSettings).Assembly.GetName().Name == "NoGaReader.Core" &&
+           typeof(PortableDocumentLoader).Assembly == typeof(AppSettings).Assembly &&
+           typeof(DocumentLoader).Assembly != typeof(AppSettings).Assembly,
+        "Cross-platform core assembly boundary");
+    var containmentRoot = Path.Combine(Path.GetTempPath(), "nogareader-smoke-root");
+    Assert(PathSemantics.IsInside(containmentRoot, Path.Combine(containmentRoot, "child.epub")) &&
+           PathSemantics.IsInside(containmentRoot, Path.Combine(containmentRoot, "nested", "page.png")) &&
+           !PathSemantics.IsInside(containmentRoot, containmentRoot) &&
+           !PathSemantics.IsInside(containmentRoot, Path.Combine(containmentRoot, "..", "escape.epub")) &&
+           !PathSemantics.IsInside(containmentRoot, containmentRoot + "-sibling"),
+        "PathSemantics containment is strict: children only, no root, no escapes");
     var settingsStore = new SettingsStore();
     settingsStore.Save(new AppSettings
     {
@@ -123,12 +134,29 @@ try
     var htmlPath = Path.Combine(testRoot, "sample.html");
     File.WriteAllText(htmlPath, "<!doctype html><title>Sample</title><p>Hello</p>", Encoding.UTF8);
     var html = await loader.LoadAsync(htmlPath);
-    Assert(html.Kind == ReaderDocumentKind.Html, "HTML kind");
+    Assert(html.Kind == ReaderDocumentKind.Html && !html.EnableScriptExecution,
+        "Direct HTML is routed without document script execution");
 
     var pdfPath = Path.Combine(testRoot, "sample.pdf");
     File.WriteAllBytes(pdfPath, "%PDF-1.4\n%%EOF"u8.ToArray());
     var pdf = await loader.LoadAsync(pdfPath);
     Assert(pdf.Kind == ReaderDocumentKind.Pdf, "PDF routing");
+
+    var recentStoreA = new RecentStore();
+    var recentStoreB = new RecentStore();
+    _ = recentStoreA.Load();
+    _ = recentStoreB.Load();
+    recentStoreA.Touch(text, 0, 0.1, 1.0);
+    recentStoreB.Touch(pdf, 0, 0, 1.0, currentPage: 7);
+    var sharedRecents = new RecentStore().Load();
+    Assert(sharedRecents.Any(item => string.Equals(
+               Path.GetFullPath(item.Path), Path.GetFullPath(textPath), StringComparison.OrdinalIgnoreCase)) &&
+           sharedRecents.Any(item => string.Equals(
+               Path.GetFullPath(item.Path), Path.GetFullPath(pdfPath), StringComparison.OrdinalIgnoreCase)),
+        "RecentStore instances merge updates instead of overwriting each other");
+    Assert(sharedRecents.Single(item => string.Equals(
+               Path.GetFullPath(item.Path), Path.GetFullPath(pdfPath), StringComparison.OrdinalIgnoreCase)).CurrentPage == 7,
+        "RecentStore persists fixed-layout page numbers");
 
     var fb2Path = Path.Combine(testRoot, "sample.fb2");
     File.WriteAllText(fb2Path, """
@@ -270,6 +298,7 @@ try
     Assert(!File.Exists(Path.Combine(AppPaths.CacheRoot, "epub", "escape.txt")), "ZIP traversal did not write outside cache");
 
     await TestLibraryDatabaseAsync(testRoot);
+    await TestPortableLibraryServiceAsync(testRoot);
     await TestBookSearchIndexerAsync(testRoot);
     TestReaderRuntimeAnnotationApi();
     await TestLibraryScannerAsync(testRoot);
@@ -292,11 +321,19 @@ try
            CalibreConverter.IsKindleExtension(".azw"),
         "Kindle extension recognition");
     Assert(DocumentLoader.IsSupported(Path.Combine(testRoot, "book.mobi")) &&
-           DocumentLoader.IsSupported(Path.Combine(testRoot, "book.azw3")),
+           DocumentLoader.IsSupported(Path.Combine(testRoot, "book.azw3")) &&
+           DocumentLoader.IsSupported(Path.Combine(testRoot, "book.azw4")),
         "DocumentLoader supports Kindle extensions");
     Assert(DocumentLoader.OpenFileFilter.Contains("*.mobi", StringComparison.OrdinalIgnoreCase) &&
-           DocumentLoader.OpenFileFilter.Contains("*.azw3", StringComparison.OrdinalIgnoreCase),
+           DocumentLoader.OpenFileFilter.Contains("*.azw3", StringComparison.OrdinalIgnoreCase) &&
+           DocumentLoader.OpenFileFilter.Contains("*.azw4", StringComparison.OrdinalIgnoreCase),
         "Open filter lists Kindle formats");
+    Assert(DocumentFormatSupport.IsMobileMvpSupported("book.epub") &&
+           DocumentFormatSupport.IsMobileMvpSupported("book.pdf") &&
+           DocumentFormatSupport.IsMobileMvpSupported("book.cbz") &&
+           !DocumentFormatSupport.IsMobileMvpSupported("book.mobi") &&
+           !DocumentFormatSupport.IsMobileMvpSupported("book.xps"),
+        "Mobile MVP format catalog only advertises planned capabilities");
 
     var missingKindlePath = Path.Combine(testRoot, "missing-engine.mobi");
     File.WriteAllBytes(missingKindlePath, [0x00, 0x01, 0x02, 0x03]);
@@ -359,8 +396,22 @@ try
     Assert(OfficeDocumentService.CanEditNatively(".docx") &&
            OfficeDocumentService.CanEditNatively(".rtf") &&
            OfficeDocumentService.CanEditNatively(".txt") &&
+           !OfficeDocumentService.CanEditNatively(".html") &&
            !OfficeDocumentService.CanEditNatively(".doc"),
         "Office native edit matrix");
+    var htmlEditRejected = false;
+    try
+    {
+        _ = OfficeDocumentService.Load(htmlPath);
+    }
+    catch (NotSupportedException)
+    {
+        htmlEditRejected = true;
+    }
+
+    Assert(htmlEditRejected &&
+           !OfficeDocumentService.SaveFilter.Contains("HTML", StringComparison.OrdinalIgnoreCase),
+        "HTML remains a safe reader format and is not advertised as a native editor format");
     var docxPath = Path.Combine(testRoot, "editor-sample.docx");
     var doc = OfficeDocumentService.CreateBlank("Smoke 标题");
     doc.Blocks.Add(new System.Windows.Documents.Paragraph(
@@ -596,7 +647,7 @@ static void TestSettingsCloneCompleteness()
         LastSyncUtc = "2026-07-18 12:00:00Z",
         UiLanguage = "en-US"
     };
-    var mainWindowType = typeof(AppSettings).Assembly.GetType("NoGaReader.MainWindow", throwOnError: true)!;
+    var mainWindowType = typeof(DocumentLoader).Assembly.GetType("NoGaReader.MainWindow", throwOnError: true)!;
     var cloneMethod = mainWindowType.GetMethod(
         "CloneSettings",
         BindingFlags.Static | BindingFlags.NonPublic)
@@ -1116,6 +1167,27 @@ static async Task TestLibraryDatabaseAsync(string testRoot)
         "Database Chinese match offsets and snippets");
     Assert((await database.SearchAsync("needle", savedBook.Id + 1000)).Count == 0, "Database search book filter");
 
+    var recallPath = Path.Combine(fixtureRoot, "search-recall.epub");
+    File.WriteAllText(recallPath, "search recall fixture", Encoding.UTF8);
+    var recallBook = await database.UpsertBookAsync(new LibraryBook
+    {
+        Path = recallPath,
+        Title = "FTS 召回测试",
+        Format = "EPUB"
+    });
+    var crowdedSections = Enumerable.Range(0, 1_001)
+        .Select(index => new SearchSection
+        {
+            SectionIndex = index,
+            Title = $"章节 {index}",
+            Text = index == 1_000 ? "这里包含 alpha beta 精确短语" : $"alpha filler {index} beta"
+        })
+        .ToList();
+    await database.ReplaceSearchIndexAsync(recallBook.Id, crowdedSections);
+    var recallHits = await database.SearchAsync("alpha beta", recallBook.Id, limit: 50);
+    Assert(recallHits.Count == 1 && recallHits[0].SectionIndex == 1_000,
+        "Database LIKE supplement preserves exact-match recall beyond FTS candidate cap");
+
     var relocatedDirectory = Path.Combine(fixtureRoot, "relocated");
     Directory.CreateDirectory(relocatedDirectory);
     var relocatedPath = Path.Combine(relocatedDirectory, "database-book.epub");
@@ -1212,10 +1284,125 @@ static async Task TestLibraryDatabaseAsync(string testRoot)
     Assert((await database.ListLibraryFoldersAsync()).Count == 0, "Database folder deletion persisted");
 
     Assert(await database.RemoveBookAsync(savedBook.Id), "Database book delete");
+    Assert(await database.RemoveBookAsync(recallBook.Id), "Database search recall fixture delete");
     Assert(await database.GetReaderLocationAsync(savedBook.Id) is null, "Database location cascades with book");
     Assert((await database.ListAnnotationsAsync(savedBook.Id)).Count == 0, "Database annotations cascade with book");
     Assert((await database.SearchAsync("duplicate-marker", savedBook.Id)).Count == 0, "Database search index cascades with book");
     Assert((await database.ListBooksAsync()).Count == 0, "Database relocation fixtures fully removed");
+
+    SqliteConnection.ClearAllPools();
+}
+
+static async Task TestPortableLibraryServiceAsync(string testRoot)
+{
+    // Exercises the shared mobile library flows (import → open → progress →
+    // annotations → search → delete) on Windows, isolated from other fixtures.
+    var fixtureRoot = Path.Combine(testRoot, "portable-library");
+    Directory.CreateDirectory(fixtureRoot);
+    var booksRoot = Path.Combine(fixtureRoot, "Books");
+    var service = new PortableLibraryService(
+        booksRoot,
+        Path.Combine(fixtureRoot, "portable-library.db"));
+
+    var sourceEpub = Path.Combine(fixtureRoot, "portable-source.epub");
+    CreateEpub(sourceEpub);
+
+    LibraryBook imported;
+    await using (var source = File.OpenRead(sourceEpub))
+    {
+        imported = await service.ImportAsync(source, "portable-source.epub");
+    }
+
+    Assert(File.Exists(imported.Path) &&
+           PathSemantics.IsInside(booksRoot, imported.Path) &&
+           imported.Title == "测试 EPUB",
+        "Portable library import copies into the managed directory and reads metadata");
+
+    LibraryBook duplicate;
+    await using (var source = File.OpenRead(sourceEpub))
+    {
+        duplicate = await service.ImportAsync(source, "portable-source.epub");
+    }
+
+    Assert(duplicate.Id != imported.Id &&
+           !PathSemantics.Equals(duplicate.Path, imported.Path) &&
+           Path.GetFileName(duplicate.Path).Contains("(2)", StringComparison.Ordinal),
+        "Portable library import keeps duplicates apart with a numbered copy");
+
+    var unsupportedRejected = false;
+    try
+    {
+        _ = await service.ImportAsync(Stream.Null, "book.mobi");
+    }
+    catch (NotSupportedException)
+    {
+        unsupportedRejected = true;
+    }
+
+    Assert(unsupportedRejected && !File.Exists(Path.Combine(booksRoot, "book.mobi")),
+        "Portable library rejects non-MVP formats before writing anything");
+
+    var managedCountBeforeBroken = Directory.GetFiles(booksRoot).Length;
+    var brokenRejected = false;
+    try
+    {
+        await using var broken = new MemoryStream("not an epub"u8.ToArray());
+        _ = await service.ImportAsync(broken, "broken.epub");
+    }
+    catch (Exception exception) when (exception is not NotSupportedException)
+    {
+        brokenRejected = true;
+    }
+
+    Assert(brokenRejected && Directory.GetFiles(booksRoot).Length == managedCountBeforeBroken,
+        "Portable library cleans up the managed copy when a broken import fails to load");
+
+    var opened = await service.OpenAsync(imported);
+    Assert(opened.Sections.Count == 2 && opened.CurrentSectionIndex == 0,
+        "Portable library open loads the imported book");
+
+    opened.CurrentSectionIndex = 1;
+    await service.SaveLocationAsync(imported.Id, opened, 0.5);
+    var listed = (await service.ListAsync()).Single(book => book.Id == imported.Id);
+    Assert(listed.Location is { SectionIndex: 1 } savedLocation &&
+           Math.Abs(savedLocation.SectionProgress - 0.5) < 0.0001,
+        "Portable library persists reading progress");
+
+    var reopened = await service.OpenAsync(listed);
+    Assert(reopened.CurrentSectionIndex == 1,
+        "Portable library open restores the saved section");
+
+    await service.AddBookmarkAsync(imported.Id, reopened, 0.5);
+    await service.AddTextAnnotationAsync(imported.Id, reopened, 0.5, "Second section.", "移动端笔记");
+    var annotations = await service.ListAnnotationsAsync(imported.Id, sectionIndex: 1);
+    Assert(annotations.Count == 2 &&
+           annotations.Any(item => item.Type == AnnotationType.Bookmark) &&
+           annotations.Any(item => item.Type == AnnotationType.Note &&
+                                   item.SelectedText == "Second section." &&
+                                   item.Note == "移动端笔记"),
+        "Portable library stores bookmarks and text annotations per section");
+
+    var hits = await service.SearchAsync(listed, reopened, "Second section");
+    Assert(hits.Count >= 1 && hits[0].SectionIndex == 1,
+        "Portable library search indexes the book and finds section text");
+
+    var cachedHits = await service.SearchAsync(listed, reopened, "Second section");
+    Assert(cachedHits.Count == hits.Count,
+        "Portable library search reuses the current index");
+
+    await service.DeleteAsync(listed);
+    Assert(!File.Exists(listed.Path) &&
+           (await service.ListAsync()).All(book => book.Id != listed.Id),
+        "Portable library delete removes the managed copy and the record");
+
+    var outside = new LibraryBook
+    {
+        Id = duplicate.Id,
+        Path = sourceEpub
+    };
+    await service.DeleteAsync(outside);
+    Assert(File.Exists(sourceEpub),
+        "Portable library delete never touches files outside the managed directory");
 
     SqliteConnection.ClearAllPools();
 }
@@ -1287,17 +1474,13 @@ static async Task TestBookSearchIndexerAsync(string testRoot)
 
 static void TestReaderRuntimeAnnotationApi()
 {
-    var runtimeType = typeof(AppSettings).Assembly.GetType(
-        "NoGaReader.Services.ReaderRuntime",
-        throwOnError: true)!;
-    var buildMethod = runtimeType.GetMethod(
-        "BuildRuntimeScript",
-        BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static)
-        ?? throw new InvalidOperationException("ReaderRuntime.BuildRuntimeScript was not found.");
-    var script = (string?)buildMethod.Invoke(
-        null,
-        null)
-        ?? throw new InvalidOperationException("ReaderRuntime returned no runtime script.");
+    var script = ReaderRuntime.BuildRuntimeScript();
+    var darkBootstrap = ReaderRuntime.BuildBootstrapScript(
+        new AppSettings { ReaderTheme = ReaderThemeMode.Auto },
+        restoreProgress: 0,
+        isDarkAppTheme: true);
+    Assert(darkBootstrap.Contains("auto-dark", StringComparison.Ordinal),
+        "ReaderRuntime accepts platform theme state without a WPF dependency");
 
     foreach (var contract in new[]
              {
@@ -1319,7 +1502,7 @@ static void TestReaderRuntimeAnnotationApi()
         Assert(script.Contains(contract, StringComparison.Ordinal), $"ReaderRuntime annotation API: {contract}");
     }
 
-    var controllerType = typeof(AppSettings).Assembly.GetType(
+    var controllerType = typeof(DocumentLoader).Assembly.GetType(
         "NoGaReader.Services.ReaderViewController",
         throwOnError: true)!;
     var revealMethod = controllerType.GetMethod(
@@ -1629,7 +1812,7 @@ static void CreateEpub(string path)
           <metadata xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:title>测试 EPUB</dc:title></metadata>
           <manifest>
             <item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>
-            <item id="c1" href="chapter1.xhtml" media-type="application/xhtml+xml"/>
+            <item id="c1" href="chapter1.html" media-type="text/html"/>
             <item id="c2" href="chapter2.xhtml" media-type="application/xhtml+xml"/>
           </manifest>
           <spine><itemref idref="c1"/><itemref idref="c2"/></spine>
@@ -1637,10 +1820,10 @@ static void CreateEpub(string path)
         """);
     WriteEntry(archive, "OEBPS/nav.xhtml", """
         <html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops">
-          <body><nav epub:type="toc"><ol><li><a href="chapter1.xhtml">开篇</a></li><li><a href="chapter2.xhtml">继续</a></li></ol></nav></body>
+          <body><nav epub:type="toc"><ol><li><a href="chapter1.html">开篇</a></li><li><a href="chapter2.xhtml">继续</a></li></ol></nav></body>
         </html>
         """);
-    WriteEntry(archive, "OEBPS/chapter1.xhtml", "<html xmlns=\"http://www.w3.org/1999/xhtml\"><body><h1>开篇</h1><p onclick=\"alert(1)\">Hello EPUB.</p><a href=\"data:text/html;base64,PHNjcmlwdD5hbGVydCgxKTwvc2NyaXB0Pg==\">active data</a><a href=\"payload.xhtml\">payload</a><script>alert('blocked')</script><iframe src=\"https://example.com\"/></body></html>");
+    WriteEntry(archive, "OEBPS/chapter1.html", "<HTML xmlns=\"http://www.w3.org/1999/xhtml\"><BODY><h1>开篇</h1><p ONCLICK=\"alert(1)\">Hello EPUB.</p><a HREF=\"data:text/html;base64,PHNjcmlwdD5hbGVydCgxKTwvc2NyaXB0Pg==\">active data</a><a href=\"payload.xhtml\">payload</a><SCRIPT>alert('blocked')</SCRIPT><IFRAME SRC=\"https://example.com\"/></BODY></HTML>");
     WriteEntry(archive, "OEBPS/chapter2.xhtml", "<html xmlns=\"http://www.w3.org/1999/xhtml\"><body><h1>继续</h1><p>Second section.</p></body></html>");
     WriteEntry(archive, "OEBPS/payload.xhtml", "<html xmlns=\"http://www.w3.org/1999/xhtml\"><body><script>window.chrome.webview.postMessage('unsafe')</script></body></html>");
 }

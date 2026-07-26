@@ -541,11 +541,11 @@ public sealed class CloudSyncService
     {
         try
         {
-            return Path.GetFullPath(path).ToUpperInvariant();
+            return PathSemantics.ToKey(Path.GetFullPath(path));
         }
         catch
         {
-            return path.Trim().ToUpperInvariant();
+            return PathSemantics.ToKey(path.Trim());
         }
     }
 }
