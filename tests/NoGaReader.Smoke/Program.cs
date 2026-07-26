@@ -299,6 +299,7 @@ try
 
     await TestLibraryDatabaseAsync(testRoot);
     await TestPortableLibraryServiceAsync(testRoot);
+    TestMobileReaderPresenter(testRoot);
     await TestBookSearchIndexerAsync(testRoot);
     TestReaderRuntimeAnnotationApi();
     await TestLibraryScannerAsync(testRoot);
@@ -1405,6 +1406,170 @@ static async Task TestPortableLibraryServiceAsync(string testRoot)
         "Portable library delete never touches files outside the managed directory");
 
     SqliteConnection.ClearAllPools();
+}
+
+static void TestMobileReaderPresenter(string testRoot)
+{
+    // Pure-state coverage of the mobile reader host: paging bounds, section
+    // flow, contents mapping, restore math, and in-book link resync. Paths
+    // are synthetic — the presenter never touches the filesystem.
+    var root = Path.Combine(testRoot, "presenter");
+
+    // Section-based document (EPUB-like): three chapters, TOC with a fragment.
+    var chapters = new[]
+    {
+        new ReaderSection("第一章", Path.Combine(root, "ch1.xhtml")),
+        new ReaderSection("第二章", Path.Combine(root, "ch2.xhtml")),
+        new ReaderSection("第三章", Path.Combine(root, "ch3.xhtml"))
+    };
+    var epubSession = new ReaderSession
+    {
+        SourcePath = Path.Combine(root, "book.epub"),
+        Title = "Presenter EPUB",
+        RootDirectory = root,
+        Kind = ReaderDocumentKind.Epub,
+        Sections = chapters,
+        TableOfContents =
+        [
+            new TocNode
+            {
+                Title = "第一章",
+                FullPath = chapters[0].FullPath,
+                Children = [new TocNode { Title = "小节", FullPath = chapters[1].FullPath + "#anchor" }]
+            },
+            new TocNode { Title = "第三章", FullPath = chapters[2].FullPath }
+        ],
+        IsReflowable = true,
+        EnableScriptExecution = true
+    };
+
+    var epub = new MobileReaderPresenter(epubSession);
+    Assert(epub.UsesWebView && !epub.IsPaged &&
+           epub.Contents.Count == 3 &&
+           epub.Contents.Select(entry => entry.SectionIndex).SequenceEqual([0, 1, 2]) &&
+           epub.SelectedContentsIndex == 0,
+        "Presenter maps a fragment-bearing TOC onto section indexes");
+    Assert(!epub.CanMovePrevious && epub.CanMoveNext &&
+           epub.PreviousButtonText == "‹ 上一章" &&
+           epub.PositionText == $"1 / 3 · {0d:P0}",
+        "Presenter reports section-mode chrome at the first section");
+
+    epub.SectionProgress = 0.5;
+    Assert(Math.Abs(epub.DocumentProgress - 0.5 / 3) < 0.0001 &&
+           Math.Abs(epub.ProgressForSave - 0.5) < 0.0001,
+        "Presenter derives document progress from section index and progress");
+
+    Assert(epub.Move(1) == MobileReaderPresenter.MoveResult.SectionChanged &&
+           epubSession.CurrentSectionIndex == 1 &&
+           epub.SectionProgress == 0 &&
+           epub.SelectedContentsIndex == 1,
+        "Presenter moves forward one section and resets progress to the top");
+    Assert(epub.Move(-1) == MobileReaderPresenter.MoveResult.SectionChanged &&
+           epubSession.CurrentSectionIndex == 0 &&
+           Math.Abs(epub.SectionProgress - 1) < 0.0001,
+        "Presenter moves backward one section and lands at the bottom");
+    Assert(epub.Move(-1) == MobileReaderPresenter.MoveResult.None &&
+           epubSession.CurrentSectionIndex == 0,
+        "Presenter refuses to move before the first section");
+
+    epub.JumpToSearchHit(new SearchHit { SectionIndex = 2, SectionProgress = 0.25 });
+    Assert(epubSession.CurrentSectionIndex == 2 &&
+           Math.Abs(epub.SectionProgress - 0.25) < 0.0001 &&
+           epub.SelectedContentsIndex == 2 &&
+           !epub.CanMoveNext,
+        "Presenter targets a search hit's section and progress");
+
+    Assert(epub.SyncSectionFromPath(chapters[1].FullPath) &&
+           epubSession.CurrentSectionIndex == 1 &&
+           epub.SectionProgress == 0 &&
+           !epub.SyncSectionFromPath(chapters[1].FullPath) &&
+           !epub.SyncSectionFromPath(Path.Combine(root, "outside.xhtml")),
+        "Presenter resyncs from in-book navigation exactly when the section changes");
+
+    // Comic: five pages, one section per page.
+    var comicSession = new ReaderSession
+    {
+        SourcePath = Path.Combine(root, "comic.cbz"),
+        Title = "Presenter Comic",
+        RootDirectory = root,
+        Kind = ReaderDocumentKind.Comic,
+        Sections = Enumerable.Range(1, 5)
+            .Select(page => new ReaderSection($"第 {page} 页", Path.Combine(root, $"p{page}.png")))
+            .ToArray(),
+        ComicPages = Enumerable.Range(1, 5)
+            .Select(page => new ComicPage(page - 1, Path.Combine(root, $"p{page}.png")))
+            .ToArray()
+    };
+
+    var comic = new MobileReaderPresenter(comicSession);
+    Assert(comic.IsPaged && !comic.UsesWebView &&
+           comic.VisualPageCount == 5 &&
+           comic.PreviousButtonText == "‹ 上一页",
+        "Presenter treats comics as paged documents");
+
+    comic.RestoreFromDocumentProgress(0.5);
+    Assert(comic.VisualPageIndex == 2 &&
+           comicSession.CurrentSectionIndex == 2 &&
+           comic.CurrentComicPagePath == comicSession.ComicPages[2].FullPath &&
+           Math.Abs(comic.ProgressForSave - 0.5) < 0.0001,
+        "Presenter restores a comic page from saved document progress");
+
+    Assert(comic.Move(1) == MobileReaderPresenter.MoveResult.PageChanged &&
+           comic.VisualPageIndex == 3 &&
+           comic.Move(10) == MobileReaderPresenter.MoveResult.PageChanged &&
+           comic.VisualPageIndex == 4 &&
+           comic.Move(1) == MobileReaderPresenter.MoveResult.None &&
+           !comic.CanMoveNext &&
+           comic.PositionText == "5 / 5",
+        "Presenter clamps comic paging at the last page");
+
+    comic.JumpToContents(comic.Contents[1]);
+    Assert(comic.VisualPageIndex == 1 &&
+           comicSession.CurrentSectionIndex == 1 &&
+           comic.SectionProgress == 0,
+        "Presenter contents jump drives both the page and the section");
+
+    // PDF: single logical section, page count arrives from the renderer.
+    var pdfSession = new ReaderSession
+    {
+        SourcePath = Path.Combine(root, "doc.pdf"),
+        Title = "Presenter PDF",
+        RootDirectory = root,
+        Kind = ReaderDocumentKind.Pdf,
+        Sections = [new ReaderSection("正文", Path.Combine(root, "doc.pdf"))]
+    };
+
+    var pdf = new MobileReaderPresenter(pdfSession);
+    Assert(pdf.IsPaged && pdf.VisualPageCount == 1, "Presenter defaults PDFs to one page");
+    pdf.SetPdfPageCount(10);
+    pdf.RestoreFromDocumentProgress(1);
+    Assert(pdf.VisualPageIndex == 9 &&
+           Math.Abs(pdf.ProgressForSave - 1) < 0.0001 &&
+           pdf.PositionText == "10 / 10",
+        "Presenter restores the last PDF page from full progress");
+    pdf.SetPdfPageCount(4);
+    Assert(pdf.VisualPageIndex == 3, "Presenter clamps the PDF page when the count shrinks");
+    Assert(pdf.Move(-2) == MobileReaderPresenter.MoveResult.PageChanged && pdf.VisualPageIndex == 1,
+        "Presenter moves PDF pages by delta");
+
+    // Single-section text: pure percentage chrome, no section navigation.
+    var textSession = new ReaderSession
+    {
+        SourcePath = Path.Combine(root, "note.txt"),
+        Title = "Presenter TXT",
+        RootDirectory = root,
+        Kind = ReaderDocumentKind.Text,
+        Sections = [new ReaderSection("正文", Path.Combine(root, "note.html"))],
+        IsReflowable = true,
+        EnableScriptExecution = true
+    };
+
+    var text = new MobileReaderPresenter(textSession);
+    text.SectionProgress = 0.42;
+    Assert(text.PositionText == $"{0.42:P0}" &&
+           text.Move(1) == MobileReaderPresenter.MoveResult.None &&
+           !text.CanMoveNext && !text.CanMovePrevious,
+        "Presenter renders single-section documents as a bare percentage");
 }
 
 static async Task TestBookSearchIndexerAsync(string testRoot)

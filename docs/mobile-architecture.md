@@ -61,6 +61,10 @@ follow-up change.
   search, delete) live in Core as `PortableLibraryService`; the Android client
   is a thin adapter, and the Windows smoke suite exercises the shared flows
   end-to-end without an emulator.
+- The reader's paging/section/progress/contents state machine lives in Core as
+  `MobileReaderPresenter`; `ReaderPage` is a thin host that renders presenter
+  state and bridges WebView, `PdfRenderer`, and dialogs. Paging bounds,
+  restore math, contents mapping, and in-book link resync are smoke-tested.
 - The mobile chrome uses the same warm-stone palette as the desktop client,
   including the continue-reading card and the muted-surface format badges.
 

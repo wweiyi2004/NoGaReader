@@ -3,20 +3,23 @@ using System.Text.Json;
 using NoGaReader.Mobile.Platforms.Android;
 using NoGaReader.Mobile.Services;
 using NoGaReader.Models;
+using NoGaReader.Services;
 
 namespace NoGaReader.Mobile;
 
+/// <summary>
+/// Thin reader host: all paging/section/progress/contents state lives in
+/// <see cref="MobileReaderPresenter"/> (Core, smoke-tested); this page renders
+/// that state and bridges Android WebView, PdfRenderer, and dialogs.
+/// </summary>
 public partial class ReaderPage : ContentPage
 {
     private readonly MobileLibraryService _library;
     private readonly LibraryBook _book;
     private readonly ReaderSession _session;
-    private readonly List<ContentsEntry> _contents;
+    private readonly MobileReaderPresenter _presenter;
     private readonly IDispatcherTimer _progressTimer;
     private AndroidPdfDocument? _pdfDocument;
-    private int _visualPageIndex;
-    private int _visualPageCount = 1;
-    private double _sectionProgress;
     private bool _darkTheme;
     private double _fontSize;
     private double _lineHeight;
@@ -28,11 +31,6 @@ public partial class ReaderPage : ContentPage
     private readonly WebView? _documentWebView;
     private readonly string? _webViewUnavailableMessage;
 
-    private bool UsesWebView => _session.Kind is not (
-        ReaderDocumentKind.Pdf or
-        ReaderDocumentKind.Image or
-        ReaderDocumentKind.Comic);
-
     private WebView DocumentWebView => _documentWebView
         ?? throw new InvalidOperationException("当前文档格式不使用 WebView。");
 
@@ -42,6 +40,7 @@ public partial class ReaderPage : ContentPage
         _library = library;
         _book = book;
         _session = session;
+        _presenter = new MobileReaderPresenter(session);
         Title = session.Title;
         ReaderTitle.Text = session.Title;
         ReaderSubtitle.Text = string.IsNullOrWhiteSpace(session.Author)
@@ -50,7 +49,7 @@ public partial class ReaderPage : ContentPage
         _fontSize = Math.Clamp(Preferences.Default.Get("reader_font_size", 19d), 16d, 28d);
         _lineHeight = Math.Clamp(Preferences.Default.Get("reader_line_height", 1.8d), 1.4d, 2.2d);
         _darkTheme = Preferences.Default.Get("reader_dark_theme", false);
-        if (UsesWebView)
+        if (_presenter.UsesWebView)
         {
             try
             {
@@ -76,8 +75,7 @@ public partial class ReaderPage : ContentPage
         AnnotationButton.IsVisible = _documentWebView is not null && session.EnableScriptExecution;
         DisplayButton.IsVisible = _documentWebView is not null && session.EnableScriptExecution;
 
-        _contents = BuildContents(session);
-        ContentsPicker.ItemsSource = _contents.Select(item => item.Title).ToList();
+        ContentsPicker.ItemsSource = _presenter.Contents.Select(item => item.Title).ToList();
         SelectCurrentContentsEntry();
 
         _progressTimer = Dispatcher.CreateTimer();
@@ -134,15 +132,13 @@ public partial class ReaderPage : ContentPage
             switch (_session.Kind)
             {
                 case ReaderDocumentKind.Pdf:
-                    await LoadPdfAsync(restoreSavedPosition);
+                    await RenderPdfAsync(restoreSavedPosition);
                     break;
                 case ReaderDocumentKind.Image:
-                    _visualPageIndex = 0;
-                    _visualPageCount = 1;
                     ShowImage(_session.CurrentSection.FullPath);
                     break;
                 case ReaderDocumentKind.Comic:
-                    LoadComicPage(restoreSavedPosition);
+                    RenderComicPage(restoreSavedPosition);
                     break;
                 default:
                     ShowWebSection();
@@ -158,44 +154,28 @@ public partial class ReaderPage : ContentPage
         }
     }
 
-    private async Task LoadPdfAsync(bool restoreSavedPosition)
+    private async Task RenderPdfAsync(bool restoreSavedPosition)
     {
         _pdfDocument ??= new AndroidPdfDocument(_session.SourcePath);
-        _visualPageCount = Math.Max(1, _pdfDocument.PageCount);
+        _presenter.SetPdfPageCount(_pdfDocument.PageCount);
         if (restoreSavedPosition)
         {
-            var savedProgress = Math.Clamp(_book.Location?.DocumentProgress ?? 0, 0, 1);
-            _visualPageIndex = Math.Clamp(
-                (int)Math.Round(savedProgress * Math.Max(0, _visualPageCount - 1)),
-                0,
-                _visualPageCount - 1);
+            _presenter.RestoreFromDocumentProgress(_book.Location?.DocumentProgress ?? 0);
         }
 
-        PageImage.Source = await _pdfDocument.RenderPageAsync(_visualPageIndex);
+        PageImage.Source = await _pdfDocument.RenderPageAsync(_presenter.VisualPageIndex);
         ShowImageHost();
-        _sectionProgress = VisualProgress;
     }
 
-    private void LoadComicPage(bool restoreSavedPosition)
+    private void RenderComicPage(bool restoreSavedPosition)
     {
-        _visualPageCount = Math.Max(1, _session.ComicPages.Count);
         if (restoreSavedPosition)
         {
-            var savedProgress = Math.Clamp(_book.Location?.DocumentProgress ?? 0, 0, 1);
-            _visualPageIndex = Math.Clamp(
-                (int)Math.Round(savedProgress * Math.Max(0, _visualPageCount - 1)),
-                0,
-                _visualPageCount - 1);
+            _presenter.RestoreFromDocumentProgress(_book.Location?.DocumentProgress ?? 0);
         }
 
-        _session.CurrentSectionIndex = Math.Clamp(
-            _visualPageIndex,
-            0,
-            _session.Sections.Count - 1);
         SelectCurrentContentsEntry();
-        var page = _session.ComicPages[Math.Clamp(_visualPageIndex, 0, _session.ComicPages.Count - 1)];
-        ShowImage(page.FullPath);
-        _sectionProgress = VisualProgress;
+        ShowImage(_presenter.CurrentComicPagePath);
     }
 
     private void ShowImage(string path)
@@ -229,8 +209,8 @@ public partial class ReaderPage : ContentPage
         }
 
         // An in-book link (EPUB cross-chapter navigation) changes the document
-        // without going through MoveAsync; resync the session index so the
-        // position label, contents picker, and saved progress stay truthful.
+        // without going through MoveAsync; resync the presenter so the position
+        // label, contents picker, and saved progress stay truthful.
         SyncSectionFromNavigatedUrl(e.Url);
         if (!_session.EnableScriptExecution)
         {
@@ -240,7 +220,7 @@ public partial class ReaderPage : ContentPage
         var savedProgress = _book.Location?.SectionIndex == _session.CurrentSectionIndex
             ? Math.Clamp(_book.Location.SectionProgress, 0, 1)
             : 0;
-        _sectionProgress = savedProgress;
+        _presenter.SectionProgress = savedProgress;
         await ApplyReaderStyleAsync(savedProgress);
         await ApplyAnnotationsAsync();
         if (_pendingSearchHit is { } hit && hit.SectionIndex == _session.CurrentSectionIndex)
@@ -285,36 +265,10 @@ public partial class ReaderPage : ContentPage
             return;
         }
 
-        string navigatedPath;
-        try
+        if (_presenter.SyncSectionFromPath(uri.LocalPath))
         {
-            navigatedPath = Path.GetFullPath(uri.LocalPath);
-        }
-        catch (Exception exception) when (
-            exception is ArgumentException or NotSupportedException or PathTooLongException)
-        {
-            return;
-        }
-
-        for (var index = 0; index < _session.Sections.Count; index++)
-        {
-            if (!string.Equals(
-                    Path.GetFullPath(_session.Sections[index].FullPath),
-                    navigatedPath,
-                    StringComparison.Ordinal))
-            {
-                continue;
-            }
-
-            if (_session.CurrentSectionIndex != index)
-            {
-                _session.CurrentSectionIndex = index;
-                _sectionProgress = 0;
-                SelectCurrentContentsEntry();
-                UpdatePositionLabel();
-            }
-
-            return;
+            SelectCurrentContentsEntry();
+            UpdatePositionLabel();
         }
     }
 
@@ -476,12 +430,7 @@ public partial class ReaderPage : ContentPage
         _ticksSinceSave = 0;
         try
         {
-            if (_session.Kind is ReaderDocumentKind.Pdf or ReaderDocumentKind.Comic)
-            {
-                _sectionProgress = VisualProgress;
-            }
-
-            await _library.SaveLocationAsync(_book.Id, _session, _sectionProgress);
+            await _library.SaveLocationAsync(_book.Id, _session, _presenter.ProgressForSave);
         }
         catch
         {
@@ -504,7 +453,7 @@ public partial class ReaderPage : ContentPage
             result = DecodeJavaScriptString(result);
             if (double.TryParse(result, NumberStyles.Float, CultureInfo.InvariantCulture, out var progress))
             {
-                _sectionProgress = Math.Clamp(progress, 0, 1);
+                _presenter.SectionProgress = progress;
             }
         }
         catch (InvalidOperationException)
@@ -516,12 +465,7 @@ public partial class ReaderPage : ContentPage
     private async Task CaptureAndSaveLocationAsync()
     {
         await CaptureWebProgressAsync();
-        if (_session.Kind is ReaderDocumentKind.Pdf or ReaderDocumentKind.Comic)
-        {
-            _sectionProgress = VisualProgress;
-        }
-
-        await _library.SaveLocationAsync(_book.Id, _session, _sectionProgress);
+        await _library.SaveLocationAsync(_book.Id, _session, _presenter.ProgressForSave);
     }
 
     private async void OnPreviousClicked(object? sender, EventArgs e)
@@ -537,25 +481,23 @@ public partial class ReaderPage : ContentPage
     private async Task MoveAsync(int delta)
     {
         await CaptureAndSaveLocationAsync();
-        if (_session.Kind == ReaderDocumentKind.Pdf)
+        switch (_presenter.Move(delta))
         {
-            _visualPageIndex = Math.Clamp(_visualPageIndex + delta, 0, _visualPageCount - 1);
-            await LoadPdfAsync(restoreSavedPosition: false);
-        }
-        else if (_session.Kind == ReaderDocumentKind.Comic)
-        {
-            _visualPageIndex = Math.Clamp(_visualPageIndex + delta, 0, _visualPageCount - 1);
-            LoadComicPage(restoreSavedPosition: false);
-        }
-        else if (_session.Sections.Count > 1)
-        {
-            _session.CurrentSectionIndex = Math.Clamp(
-                _session.CurrentSectionIndex + delta,
-                0,
-                _session.Sections.Count - 1);
-            _sectionProgress = delta > 0 ? 0 : 1;
-            SelectCurrentContentsEntry();
-            await LoadCurrentAsync(restoreSavedPosition: false);
+            case MobileReaderPresenter.MoveResult.PageChanged:
+                if (_session.Kind == ReaderDocumentKind.Pdf)
+                {
+                    await RenderPdfAsync(restoreSavedPosition: false);
+                }
+                else
+                {
+                    RenderComicPage(restoreSavedPosition: false);
+                }
+
+                break;
+            case MobileReaderPresenter.MoveResult.SectionChanged:
+                SelectCurrentContentsEntry();
+                await LoadCurrentAsync(restoreSavedPosition: false);
+                break;
         }
 
         UpdatePositionLabel();
@@ -568,26 +510,16 @@ public partial class ReaderPage : ContentPage
             return;
         }
 
-        var entry = _contents[ContentsPicker.SelectedIndex];
+        var entry = _presenter.Contents[ContentsPicker.SelectedIndex];
         await CaptureAndSaveLocationAsync();
-        _session.CurrentSectionIndex = entry.SectionIndex;
-        if (_session.Kind == ReaderDocumentKind.Comic)
-        {
-            _visualPageIndex = Math.Clamp(entry.SectionIndex, 0, _visualPageCount - 1);
-        }
-        _sectionProgress = 0;
+        _presenter.JumpToContents(entry);
         await LoadCurrentAsync(restoreSavedPosition: false);
     }
 
     private async void OnBookmarkClicked(object? sender, EventArgs e)
     {
         await CaptureWebProgressAsync();
-        if (_session.Kind is ReaderDocumentKind.Pdf or ReaderDocumentKind.Comic)
-        {
-            _sectionProgress = VisualProgress;
-        }
-
-        await _library.AddBookmarkAsync(_book.Id, _session, _sectionProgress);
+        await _library.AddBookmarkAsync(_book.Id, _session, _presenter.ProgressForSave);
         await DisplayAlert("书签", "已保存当前位置。", "好");
     }
 
@@ -627,8 +559,7 @@ public partial class ReaderPage : ContentPage
 
             var hit = visibleHits[selectedIndex];
             _pendingSearchHit = hit;
-            _session.CurrentSectionIndex = Math.Clamp(hit.SectionIndex, 0, _session.Sections.Count - 1);
-            _sectionProgress = Math.Clamp(hit.SectionProgress, 0, 1);
+            _presenter.JumpToSearchHit(hit);
             SelectCurrentContentsEntry();
             await LoadCurrentAsync(restoreSavedPosition: false);
         }
@@ -691,7 +622,7 @@ public partial class ReaderPage : ContentPage
         await _library.AddTextAnnotationAsync(
             _book.Id,
             _session,
-            _sectionProgress,
+            _presenter.SectionProgress,
             selectedText,
             note);
         await DocumentWebView.EvaluateJavaScriptAsync(
@@ -763,35 +694,18 @@ public partial class ReaderPage : ContentPage
         ApplyChromeTheme();
         if (_documentWebView is not null && WebViewHost.IsVisible && _session.EnableScriptExecution)
         {
-            await ApplyReaderStyleAsync(_sectionProgress);
+            await ApplyReaderStyleAsync(_presenter.SectionProgress);
         }
     }
 
     private void UpdatePositionLabel()
     {
-        var isPaged = _session.Kind is ReaderDocumentKind.Pdf or ReaderDocumentKind.Comic;
-        var progress = isPaged
-            ? VisualProgress
-            : Math.Clamp(
-                (_session.CurrentSectionIndex + _sectionProgress) / Math.Max(1, _session.Sections.Count),
-                0,
-                1);
-
-        PositionLabel.Text = isPaged
-            ? $"{_visualPageIndex + 1} / {_visualPageCount}"
-            : _session.Sections.Count > 1
-                ? $"{_session.CurrentSectionIndex + 1} / {_session.Sections.Count} · {progress:P0}"
-                : $"{_sectionProgress:P0}";
-        ReadingProgress.Progress = progress;
-
-        PreviousButton.Text = isPaged ? "‹ 上一页" : "‹ 上一章";
-        NextButton.Text = isPaged ? "下一页 ›" : "下一章 ›";
-        PreviousButton.IsEnabled = isPaged
-            ? _visualPageIndex > 0
-            : _session.CurrentSectionIndex > 0;
-        NextButton.IsEnabled = isPaged
-            ? _visualPageIndex < _visualPageCount - 1
-            : _session.CurrentSectionIndex < _session.Sections.Count - 1;
+        PositionLabel.Text = _presenter.PositionText;
+        ReadingProgress.Progress = _presenter.DocumentProgress;
+        PreviousButton.Text = _presenter.PreviousButtonText;
+        NextButton.Text = _presenter.NextButtonText;
+        PreviousButton.IsEnabled = _presenter.CanMovePrevious;
+        NextButton.IsEnabled = _presenter.CanMoveNext;
     }
 
     private async void OnBackClicked(object? sender, EventArgs e)
@@ -866,54 +780,11 @@ public partial class ReaderPage : ContentPage
         ReadingSurface.BackgroundColor = background;
     }
 
-    private double VisualProgress => _visualPageCount <= 1
-        ? 0
-        : (double)_visualPageIndex / (_visualPageCount - 1);
-
     private void SelectCurrentContentsEntry()
     {
         _changingContents = true;
-        var index = _contents.FindIndex(item => item.SectionIndex == _session.CurrentSectionIndex);
-        ContentsPicker.SelectedIndex = index >= 0 ? index : 0;
+        ContentsPicker.SelectedIndex = _presenter.SelectedContentsIndex;
         _changingContents = false;
-    }
-
-    private static List<ContentsEntry> BuildContents(ReaderSession session)
-    {
-        var entries = new List<ContentsEntry>();
-        if (session.TableOfContents.Count > 0)
-        {
-            foreach (var node in session.TableOfContents.SelectMany(node => node.Flatten()))
-            {
-                var index = FindSectionIndex(session, node.FullPath);
-                if (index >= 0)
-                {
-                    entries.Add(new ContentsEntry(node.Title, index));
-                }
-            }
-        }
-
-        if (entries.Count == 0)
-        {
-            entries.AddRange(session.Sections.Select((section, index) =>
-                new ContentsEntry(section.Title, index)));
-        }
-
-        return entries;
-    }
-
-    private static int FindSectionIndex(ReaderSession session, string path)
-    {
-        var candidate = path.Split('#', 2)[0];
-        for (var index = 0; index < session.Sections.Count; index++)
-        {
-            if (string.Equals(session.Sections[index].FullPath, candidate, StringComparison.Ordinal))
-            {
-                return index;
-            }
-        }
-
-        return -1;
     }
 
     private static string Shorten(string value, int maximumLength)
@@ -944,6 +815,4 @@ public partial class ReaderPage : ContentPage
 
         base.OnHandlerChanged();
     }
-
-    private sealed record ContentsEntry(string Title, int SectionIndex);
 }
