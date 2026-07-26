@@ -1,10 +1,10 @@
-# NoGaReader V1.1 架构说明
+# NoGaReader V1.2 架构说明
 
 ## 目标与边界
 
-NoGaReader 的目标不是复制 EPUB+ Reader 的“多个大型第三方程序打包到一起”方案，而是提供一个体积小、边界清楚、数据留在本机并可持续演进的 Windows 阅读器。
+NoGaReader 的目标不是复制 EPUB+ Reader 的“多个大型第三方程序打包到一起”方案，而是提供一个体积小、边界清楚、数据留在本机并可持续演进的阅读器。当前稳定客户端是 Windows WPF，跨平台核心已经单独成程序集，移动端路线见 [mobile-architecture.md](mobile-architecture.md)。
 
-V1.1 的设计约束：
+V1.2 的设计约束：
 
 1. 阅读、书库、搜索和批注均不依赖远程服务。
 2. 只读取用户主动打开的文件，或用户明确加入书库的文件夹。
@@ -19,17 +19,40 @@ V1.1 的设计约束：
 
 ## 模块地图
 
+程序集边界：
+
+```text
+NoGaReader.Core (net8.0，平台无关)
+├─ 模型、SQLite、设置、同步、扫描、全文索引与批注导出
+├─ EPUB / FB2 / 漫画 / 文本解析与安全处理
+├─ PortableDocumentLoader
+└─ ReaderRuntime / ComicReaderAssets
+
+NoGaReader (net8.0-windows，WPF)
+├─ MainWindow / Dialogs / WebView2 控制器
+├─ DocumentLoader（组合 Core 与桌面格式适配器）
+└─ Calibre / CHM / XPS / DjVu / Office / 单实例
+
+NoGaReader.Mobile（规划）
+└─ .NET MAUI UI、移动文件导入、HybridWebView、PDF 与平台生命周期
+```
+
+Windows 客户端内部模块：
+
 ```text
 MainWindow（界面与用例编排）
 │
 ├─ 文档入口
 │  └─ DocumentLoader
-│     ├─ EpubLoader
-│     ├─ Fb2Loader
-│     ├─ ComicArchiveLoader + ComicArchiveExtractor
-│     ├─ ComicFolderLoader
-│     ├─ ConvertedEbookLoader（MOBI/AZW/AZW3）
-│     └─ HtmlDocumentFactory + Markdig
+│     ├─ PortableDocumentLoader（Core）
+│     │  ├─ EpubLoader
+│     │  ├─ Fb2Loader
+│     │  ├─ ComicArchiveLoader + ComicArchiveExtractor
+│     │  ├─ ComicFolderLoader
+│     │  └─ HtmlDocumentFactory + Markdig
+│     ├─ ChmLoader / XpsLoader / DjvuLoader
+│     ├─ ConvertedEbookLoader（MOBI/AZW/AZW3/AZW4）
+│     └─ DocumentFormatSupport（桌面/移动能力目录）
 │
 ├─ 转换子系统
 │  ├─ CalibreRuntimeLocator
@@ -37,7 +60,7 @@ MainWindow（界面与用例编排）
 │  └─ ConversionDialog
 │
 ├─ 文档编辑子系统
-│  ├─ OfficeDocumentService（Open XML / RTF / TXT / HTML）
+│  ├─ OfficeDocumentService（Open XML / RTF / TXT）
 │  └─ DocumentEditorDialog（WPF RichTextBox）
 │
 ├─ 阅读视图
@@ -63,7 +86,6 @@ MainWindow（界面与用例编排）
 │
 ├─ 产品化
 │  ├─ SingleInstanceService（Mutex + Named Pipe）
-│  ├─ FileAssociationService（HKCU 扩展名）
 │  └─ CloudSyncService（文件夹清单同步）
 │
 └─ 轻量状态
@@ -97,7 +119,7 @@ MainWindow（界面与用例编排）
           书籍/位置/批注       + 阅读运行时       后台本地索引
 ```
 
-`DocumentLoader.IsSupported` 是打开对话框与书库扫描共同使用的格式边界，避免书库列出应用无法打开的文件。
+`DocumentFormatSupport` 是格式能力的共享边界。Windows 打开对话框使用完整桌面目录，移动客户端将使用受限的 MVP 目录；`PortableDocumentLoader` 只负责不依赖 Windows 渲染器或桌面转换进程的格式。
 
 ## 统一阅读模型
 

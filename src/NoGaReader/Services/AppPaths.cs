@@ -9,19 +9,60 @@ public static class AppPaths
     private static readonly TimeSpan MaximumCacheAge = TimeSpan.FromDays(45);
     private const int MaximumCacheDeletesPerRun = 128;
 
-    public static string Root { get; } = ResolveRoot();
+    private static readonly object RootSync = new();
+    private static string? _configuredRoot;
+    private static string? _resolvedRoot;
 
-    public static string DataRoot { get; } = Path.Combine(Root, "Data");
+    public static string Root
+    {
+        get
+        {
+            lock (RootSync)
+            {
+                return _configuredRoot ?? (_resolvedRoot ??= ResolveRoot());
+            }
+        }
+    }
 
-    public static string CacheRoot { get; } = Path.Combine(Root, "Cache");
+    public static string DataRoot => Path.Combine(Root, "Data");
 
-    public static string WebView2Root { get; } = Path.Combine(Root, "WebView2");
+    public static string CacheRoot => Path.Combine(Root, "Cache");
+
+    public static void ConfigureRoot(string root)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(root);
+        if (!Path.IsPathRooted(root))
+        {
+            throw new ArgumentException("数据目录必须是绝对路径。", nameof(root));
+        }
+
+        var normalized = Path.GetFullPath(root);
+        lock (RootSync)
+        {
+            if (_configuredRoot is not null && !PathSemantics.Equals(_configuredRoot, normalized))
+            {
+                throw new InvalidOperationException("应用数据目录已配置，不能在运行期间更改。");
+            }
+
+            if (_configuredRoot is null &&
+                _resolvedRoot is not null &&
+                !PathSemantics.Equals(_resolvedRoot, normalized))
+            {
+                // Something already read Root and may have cached or created paths
+                // under the default location. Silently switching roots would split
+                // application data, so surface the ordering bug instead.
+                throw new InvalidOperationException(
+                    "应用数据目录已按默认规则解析并可能已被使用；ConfigureRoot 必须在任何数据访问之前调用。");
+            }
+
+            _configuredRoot = normalized;
+        }
+    }
 
     public static void EnsureCreated()
     {
         Directory.CreateDirectory(DataRoot);
         Directory.CreateDirectory(CacheRoot);
-        Directory.CreateDirectory(WebView2Root);
     }
 
     public static string GetDocumentCacheDirectory(string sourcePath, string category)
@@ -41,10 +82,7 @@ public static class AppPaths
 
     public static bool IsInsideCache(string path)
     {
-        var root = Path.GetFullPath(CacheRoot).TrimEnd(Path.DirectorySeparatorChar) +
-                   Path.DirectorySeparatorChar;
-        var candidate = Path.GetFullPath(path);
-        return candidate.StartsWith(root, StringComparison.OrdinalIgnoreCase);
+        return PathSemantics.IsInside(CacheRoot, path);
     }
 
     public static void StartCacheCleanup()

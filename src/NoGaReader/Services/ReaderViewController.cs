@@ -28,7 +28,8 @@ internal sealed class ReaderViewController(WebView2 view)
             settings,
             restoreProgress,
             annotationsJson,
-            JsonSerializer.Serialize(restoreAnchor)));
+            JsonSerializer.Serialize(restoreAnchor),
+            App.IsDarkTheme));
     }
 
     public async Task<WebReaderLocation?> GetLocationAsync()

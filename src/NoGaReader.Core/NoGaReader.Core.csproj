@@ -1,0 +1,52 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>NoGaReader.Core</AssemblyName>
+    <RootNamespace>NoGaReader</RootNamespace>
+    <Version>1.2.0</Version>
+    <FileVersion>1.2.0.0</FileVersion>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Markdig" Version="1.3.2" />
+    <PackageReference Include="Microsoft.Data.Sqlite" Version="8.0.29" />
+    <PackageReference Include="SharpCompress" Version="0.49.1" />
+    <PackageReference Include="SQLitePCLRaw.bundle_e_sqlite3" Version="2.1.12" />
+  </ItemGroup>
+
+  <!--
+    Keep the first extraction mechanical: the files remain in their existing
+    locations while this project becomes their sole compiler/assembly owner.
+    A later layout-only change can move them without mixing that churn into
+    the platform-boundary refactor.
+  -->
+  <ItemGroup>
+    <Compile Include="..\NoGaReader\Models\**\*.cs" Link="Models\%(RecursiveDir)%(Filename)%(Extension)" />
+    <Compile Include="..\NoGaReader\Utilities\NaturalStringComparer.cs" Link="Utilities\NaturalStringComparer.cs" />
+
+    <Compile Include="..\NoGaReader\Services\AppPaths.cs" Link="Services\AppPaths.cs" />
+    <Compile Include="..\NoGaReader\Services\AnnotationExportService.cs" Link="Services\AnnotationExportService.cs" />
+    <Compile Include="..\NoGaReader\Services\BookSearchIndexer.cs" Link="Services\BookSearchIndexer.cs" />
+    <Compile Include="..\NoGaReader\Services\CloudSyncService.cs" Link="Services\CloudSyncService.cs" />
+    <Compile Include="..\NoGaReader\Services\ComicArchiveExtractor.cs" Link="Services\ComicArchiveExtractor.cs" />
+    <Compile Include="..\NoGaReader\Services\ComicArchiveLoader.cs" Link="Services\ComicArchiveLoader.cs" />
+    <Compile Include="..\NoGaReader\Services\ComicFolderLoader.cs" Link="Services\ComicFolderLoader.cs" />
+    <Compile Include="..\NoGaReader\Services\ComicReaderAssets.cs" Link="Services\ComicReaderAssets.cs" />
+    <Compile Include="..\NoGaReader\Services\EpubLoader.cs" Link="Services\EpubLoader.cs" />
+    <Compile Include="..\NoGaReader\Services\Fb2Loader.cs" Link="Services\Fb2Loader.cs" />
+    <Compile Include="..\NoGaReader\Services\HtmlDocumentFactory.cs" Link="Services\HtmlDocumentFactory.cs" />
+    <Compile Include="..\NoGaReader\Services\JsonFileStore.cs" Link="Services\JsonFileStore.cs" />
+    <Compile Include="..\NoGaReader\Services\LibraryDatabase.cs" Link="Services\LibraryDatabase.cs" />
+    <Compile Include="..\NoGaReader\Services\LibraryScanner.cs" Link="Services\LibraryScanner.cs" />
+    <Compile Include="..\NoGaReader\Services\ReaderRuntime.cs" Link="Services\ReaderRuntime.cs" />
+    <Compile Include="..\NoGaReader\Services\RecentStore.cs" Link="Services\RecentStore.cs" />
+    <Compile Include="..\NoGaReader\Services\SafeArchiveExtractor.cs" Link="Services\SafeArchiveExtractor.cs" />
+    <Compile Include="..\NoGaReader\Services\SafeXml.cs" Link="Services\SafeXml.cs" />
+    <Compile Include="..\NoGaReader\Services\SettingsStore.cs" Link="Services\SettingsStore.cs" />
+    <Compile Include="..\NoGaReader\Services\UiStrings.cs" Link="Services\UiStrings.cs" />
+  </ItemGroup>
+
+</Project>

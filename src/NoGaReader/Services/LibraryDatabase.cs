@@ -1052,7 +1052,16 @@ public sealed class LibraryDatabase
         {
             try
             {
-                return await SearchFtsAsync(query, bookId, limit, cancellationToken).ConfigureAwait(false);
+                var ranked = await SearchFtsAsync(query, bookId, limit, cancellationToken).ConfigureAwait(false);
+                if (ranked.Count >= limit)
+                {
+                    // MergeSearchHits keeps primary hits first, so a full FTS page
+                    // would discard every LIKE row anyway; skip the table scan.
+                    return ranked;
+                }
+
+                var complete = await SearchLikeAsync(query, bookId, limit, cancellationToken).ConfigureAwait(false);
+                return MergeSearchHits(ranked, complete, limit);
             }
             catch (SqliteException exception) when (exception.SqliteErrorCode == 1)
             {
@@ -1570,7 +1579,7 @@ public sealed class LibraryDatabase
         return Path.GetFullPath(path.Trim());
     }
 
-    private static string ToPathKey(string normalizedPath) => normalizedPath.ToUpperInvariant();
+    private static string ToPathKey(string normalizedPath) => PathSemantics.ToKey(normalizedPath);
 
     private static string EmptyIfNull(string? value) => value ?? string.Empty;
 

@@ -17,12 +17,39 @@
 
   <ItemGroup>
     <PackageReference Include="DocumentFormat.OpenXml" Version="3.3.0" />
-    <PackageReference Include="Markdig" Version="1.3.2" />
     <PackageReference Include="Microsoft.Data.Sqlite" Version="8.0.29" />
     <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.4078.44" />
-    <PackageReference Include="SharpCompress" Version="0.49.1" />
-    <PackageReference Include="SQLitePCLRaw.bundle_e_sqlite3" Version="2.1.12" />
     <PackageReference Include="System.IO.Packaging" Version="8.0.1" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\NoGaReader.Core\NoGaReader.Core.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Compile Remove="Models\**\*.cs" />
+    <Compile Remove="Utilities\NaturalStringComparer.cs" />
+
+    <Compile Remove="Services\AppPaths.cs" />
+    <Compile Remove="Services\AnnotationExportService.cs" />
+    <Compile Remove="Services\BookSearchIndexer.cs" />
+    <Compile Remove="Services\CloudSyncService.cs" />
+    <Compile Remove="Services\ComicArchiveExtractor.cs" />
+    <Compile Remove="Services\ComicArchiveLoader.cs" />
+    <Compile Remove="Services\ComicFolderLoader.cs" />
+    <Compile Remove="Services\ComicReaderAssets.cs" />
+    <Compile Remove="Services\EpubLoader.cs" />
+    <Compile Remove="Services\Fb2Loader.cs" />
+    <Compile Remove="Services\HtmlDocumentFactory.cs" />
+    <Compile Remove="Services\JsonFileStore.cs" />
+    <Compile Remove="Services\LibraryDatabase.cs" />
+    <Compile Remove="Services\LibraryScanner.cs" />
+    <Compile Remove="Services\ReaderRuntime.cs" />
+    <Compile Remove="Services\RecentStore.cs" />
+    <Compile Remove="Services\SafeArchiveExtractor.cs" />
+    <Compile Remove="Services\SafeXml.cs" />
+    <Compile Remove="Services\SettingsStore.cs" />
+    <Compile Remove="Services\UiStrings.cs" />
   </ItemGroup>
 
   <ItemGroup>

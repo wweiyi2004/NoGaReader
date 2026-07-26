@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using NoGaReader.Models;
 
 namespace NoGaReader.Services;
@@ -5,18 +6,24 @@ namespace NoGaReader.Services;
 public sealed class RecentStore
 {
     private const int MaximumItems = 30;
-    private readonly string _path = Path.Combine(AppPaths.DataRoot, "recent.json");
-    private readonly object _sync = new();
-    private List<RecentBook>? _items;
-    private bool _dirty;
-    private long _changeVersion;
+    private static readonly ConcurrentDictionary<string, StoreState> States =
+        new(StringComparer.OrdinalIgnoreCase);
+
+    private readonly string _path;
+    private readonly StoreState _state;
+
+    public RecentStore()
+    {
+        _path = Path.GetFullPath(Path.Combine(AppPaths.DataRoot, "recent.json"));
+        _state = States.GetOrAdd(_path, static _ => new StoreState());
+    }
 
     public IReadOnlyList<RecentBook> Load()
     {
-        lock (_sync)
+        lock (_state.Sync)
         {
             EnsureLoaded();
-            return _items!
+            return _state.Items!
                 .OrderByDescending(item => item.LastOpened)
                 .Take(MaximumItems)
                 .Select(Clone)
@@ -27,24 +34,33 @@ public sealed class RecentStore
     public RecentBook? Find(string path)
     {
         var fullPath = Path.GetFullPath(path);
-        return Load().FirstOrDefault(item =>
-            string.Equals(Path.GetFullPath(item.Path), fullPath, StringComparison.OrdinalIgnoreCase));
+        return Load().FirstOrDefault(item => PathsEqual(item.Path, fullPath));
     }
 
-    public void Touch(ReaderSession session, int sectionIndex, double sectionProgress, double zoomFactor)
+    public void Touch(
+        ReaderSession session,
+        int sectionIndex,
+        double sectionProgress,
+        double zoomFactor,
+        int currentPage = 0)
     {
-        Update(session, sectionIndex, sectionProgress, zoomFactor);
+        Update(session, sectionIndex, sectionProgress, zoomFactor, currentPage);
         Flush();
     }
 
-    public void Update(ReaderSession session, int sectionIndex, double sectionProgress, double zoomFactor)
+    public void Update(
+        ReaderSession session,
+        int sectionIndex,
+        double sectionProgress,
+        double zoomFactor,
+        int currentPage = 0)
     {
         ArgumentNullException.ThrowIfNull(session);
-        lock (_sync)
+        lock (_state.Sync)
         {
             EnsureLoaded();
             var fullPath = Path.GetFullPath(session.SourcePath);
-            var existing = _items!.FirstOrDefault(item => PathsEqual(item.Path, fullPath));
+            var existing = _state.Items!.FirstOrDefault(item => PathsEqual(item.Path, fullPath));
 
             if (existing is null)
             {
@@ -54,7 +70,7 @@ public sealed class RecentStore
                     Title = session.Title,
                     Kind = session.Kind
                 };
-                _items!.Add(existing);
+                _state.Items!.Add(existing);
             }
 
             existing.Title = session.Title;
@@ -63,9 +79,9 @@ public sealed class RecentStore
             existing.SectionIndex = Math.Clamp(sectionIndex, 0, Math.Max(0, session.Sections.Count - 1));
             existing.SectionCount = Math.Max(1, session.Sections.Count);
             existing.SectionProgress = Math.Clamp(sectionProgress, 0, 1);
+            existing.CurrentPage = Math.Max(0, currentPage);
             existing.ZoomFactor = Math.Clamp(zoomFactor, 0.5, 3.0);
-            _dirty = true;
-            _changeVersion++;
+            _state.Dirty = true;
         }
     }
 
@@ -78,50 +94,40 @@ public sealed class RecentStore
     public void RemoveInMemory(string path)
     {
         var fullPath = Path.GetFullPath(path);
-        lock (_sync)
+        lock (_state.Sync)
         {
             EnsureLoaded();
-            if (_items!.RemoveAll(item => PathsEqual(item.Path, fullPath)) > 0)
+            if (_state.Items!.RemoveAll(item => PathsEqual(item.Path, fullPath)) > 0)
             {
-                _dirty = true;
-                _changeVersion++;
+                _state.Dirty = true;
             }
         }
     }
 
     public void Flush()
     {
-        List<RecentBook> snapshot;
-        long snapshotVersion;
-        lock (_sync)
+        lock (_state.Sync)
         {
             EnsureLoaded();
-            if (!_dirty)
+            if (!_state.Dirty)
             {
                 return;
             }
 
-            snapshot = _items!
+            var snapshot = _state.Items!
                 .OrderByDescending(item => item.LastOpened)
                 .Take(MaximumItems)
                 .Select(Clone)
                 .ToList();
-            snapshotVersion = _changeVersion;
-        }
-
-        JsonFileStore.Save(_path, snapshot);
-        lock (_sync)
-        {
-            if (_changeVersion == snapshotVersion)
-            {
-                _dirty = false;
-            }
+            JsonFileStore.Save(_path, snapshot);
+            _state.Items = snapshot;
+            _state.Dirty = false;
         }
     }
 
     private void EnsureLoaded()
     {
-        _items ??= JsonFileStore.Load(_path, new List<RecentBook>())
+        _state.Items ??= JsonFileStore.Load(_path, new List<RecentBook>())
             .OrderByDescending(item => item.LastOpened)
             .Take(MaximumItems)
             .ToList();
@@ -131,10 +137,7 @@ public sealed class RecentStore
     {
         try
         {
-            return string.Equals(
-                Path.GetFullPath(left),
-                Path.GetFullPath(right),
-                StringComparison.OrdinalIgnoreCase);
+            return PathSemantics.Equals(left, right);
         }
         catch (Exception exception) when (exception is ArgumentException or NotSupportedException)
         {
@@ -151,6 +154,16 @@ public sealed class RecentStore
         SectionIndex = item.SectionIndex,
         SectionCount = item.SectionCount,
         SectionProgress = item.SectionProgress,
+        CurrentPage = item.CurrentPage,
         ZoomFactor = item.ZoomFactor
     };
+
+    private sealed class StoreState
+    {
+        public object Sync { get; } = new();
+
+        public List<RecentBook>? Items { get; set; }
+
+        public bool Dirty { get; set; }
+    }
 }

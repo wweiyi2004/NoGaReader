@@ -16,9 +16,7 @@ internal static class SafeArchiveExtractor
         }
 
         Directory.CreateDirectory(destination);
-        var destinationRoot = Path.GetFullPath(destination)
-            .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar) +
-            Path.DirectorySeparatorChar;
+        var destinationRoot = Path.GetFullPath(destination);
         long declaredTotalBytes = 0;
         long actualTotalBytes = 0;
 
@@ -49,7 +47,7 @@ internal static class SafeArchiveExtractor
             }
 
             var outputPath = Path.GetFullPath(Path.Combine(destinationRoot, normalizedName));
-            if (!outputPath.StartsWith(destinationRoot, StringComparison.OrdinalIgnoreCase))
+            if (!PathSemantics.IsInside(destinationRoot, outputPath))
             {
                 throw new InvalidDataException("压缩包包含越界路径。");
             }

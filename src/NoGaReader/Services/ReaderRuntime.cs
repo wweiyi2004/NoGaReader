@@ -3,22 +3,23 @@ using NoGaReader.Models;
 
 namespace NoGaReader.Services;
 
-internal static class ReaderRuntime
+public static class ReaderRuntime
 {
     public static string BuildBootstrapScript(
         AppSettings settings,
         double restoreProgress,
         string annotationsJson = "[]",
-        string restoreAnchorJson = "null")
+        string restoreAnchorJson = "null",
+        bool isDarkAppTheme = false)
     {
         // Auto follows the effective app chrome (system/light/dark), not a fixed paper tone.
         var resolvedTheme = settings.ReaderTheme switch
         {
-            ReaderThemeMode.Auto => App.IsDarkTheme ? "auto-dark" : "auto-light",
+            ReaderThemeMode.Auto => isDarkAppTheme ? "auto-dark" : "auto-light",
             ReaderThemeMode.Paper => "paper",
             ReaderThemeMode.Light => "light",
             ReaderThemeMode.Dark => "dark",
-            _ => App.IsDarkTheme ? "auto-dark" : "auto-light"
+            _ => isDarkAppTheme ? "auto-dark" : "auto-light"
         };
         var configuration = JsonSerializer.Serialize(new
         {

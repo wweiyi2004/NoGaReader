@@ -131,7 +131,7 @@ public sealed class LibraryScanner
                     continue;
                 }
 
-                if (!DocumentLoader.IsSupported(entry.FullName))
+                if (!DocumentFormatSupport.IsDesktopSupported(entry.FullName))
                 {
                     continue;
                 }

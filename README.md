@@ -1,6 +1,6 @@
 # NoGaReader
 
-NoGaReader 是一个面向 Windows 10/11 的本地免费阅读器。它采用洁净室实现：参考同类产品的公开功能，但不复制其代码、资源、品牌或界面。
+NoGaReader 是一个面向 Windows 10/11 与 Android 的本地免费阅读器。它采用洁净室实现：参考同类产品的公开功能，但不复制其代码、资源、品牌或界面。
 
 当前版本为 **1.2.0**。V0.7 集中重做阅读器与书库的视觉反馈：搜索不再遮挡书名，滚动阅读隐藏左右翻页键，收藏与批注状态清晰可见，并加入阅读时长、书籍数、阅读天数和继续阅读组成的现代空置页。
 
@@ -26,8 +26,8 @@ NoGaReader 是一个面向 Windows 10/11 的本地免费阅读器。它采用洁
 ## V0.9 重点
 
 - 文档编辑器：侧栏“文档”入口，支持新建/打开/编辑/保存/另存为/打印/查找。
-- 格式：DOCX（Open XML）、RTF、TXT、HTML 原生编辑；旧版 DOC 提示用 Word/LibreOffice 另存为 DOCX，ODT 可先转换。
-- 打开路由：选择 DOCX/RTF/TXT/HTML 时进入编辑器而非阅读器。
+- 格式：DOCX（Open XML）、RTF、TXT 原生编辑；HTML 使用禁用页面脚本的安全只读阅读，旧版 DOC 提示用 Word/LibreOffice 另存为 DOCX，ODT 可先转换。
+- 打开路由：选择 DOCX/RTF/TXT 时进入编辑器；HTML/HTM 进入安全阅读器。
 - 依赖：`DocumentFormat.OpenXml`，无商业文档控件授权。
 
 ## V0.8 重点
@@ -136,7 +136,7 @@ WPF / .NET 8 主窗口
 ├─ ReaderRuntime：排版、分页、选择、文本锚点和批注挂载
 ├─ ComicReaderController / Assets：漫画布局、方向、缩放、跳页与预加载
 ├─ CalibreConverter / CalibreRuntimeLocator：本地 ebook-convert 探测与批量转换
-├─ OfficeDocumentService + DocumentEditorDialog：DOCX/RTF/TXT/HTML 编辑与打印
+├─ OfficeDocumentService + DocumentEditorDialog：DOCX/RTF/TXT 编辑与打印
 ├─ SingleInstanceService：单实例与打开文件 IPC
 ├─ CloudSyncService + SyncDialog：可选文件夹云同步
 ├─ ChmLoader / XpsLoader / DjvuLoader：固定版式扩展
@@ -148,14 +148,14 @@ WPF / .NET 8 主窗口
 └─ SettingsStore：应用主题与阅读排版参数
 ```
 
-详细设计见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)。原软件分析见 [cp.md](cp.md)。
+详细设计见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)，移动端拆分与交付路线见 [docs/mobile-architecture.md](docs/mobile-architecture.md)。原软件分析见 [cp.md](cp.md)。
 
 ## 构建与运行
 
 开发要求：
 
 - Windows 10/11 x64
-- .NET 8 SDK
+- .NET 9.0.311 SDK（由 `global.json` 固定；Windows 客户端仍以 .NET 8 为目标）
 - Microsoft Edge WebView2 Runtime（Windows 10/11 通常已安装）
 
 ```powershell
@@ -163,6 +163,16 @@ dotnet restore .\NoGaReader.sln
 dotnet build .\NoGaReader.sln -c Debug
 dotnet run --project .\src\NoGaReader\NoGaReader.csproj
 ```
+
+Android 开发还需要 .NET MAUI Android workload、Android SDK 35 和 JDK 17/21：
+
+```powershell
+dotnet workload install maui-android
+dotnet build .\src\NoGaReader.Mobile\NoGaReader.Mobile.csproj -c Debug
+.\scripts\build-android.ps1 -Configuration Release -Format aab
+```
+
+Android 版通过系统文件选择器导入书籍并复制到应用私有目录，当前支持 EPUB、PDF、FB2、CBZ、TXT、Markdown、HTML 和常见图片；包含本地书库、目录、全文搜索、阅读进度、书签、高亮/笔记、明暗阅读主题以及 Android 原生 PDF 分页渲染。与桌面版一致，移动端阅读 WebView 同样离线：拦截全部外部网络资源，用户点击的网页/邮件链接交给系统应用处理。Release AAB 输出到 `artifacts\android\Release-aab`；发布到应用商店前仍需配置正式签名密钥。
 
 打开指定文件：
 

@@ -4,7 +4,7 @@
         xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
         xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
         xmlns:converters="clr-namespace:NoGaReader.Converters"
-        xmlns:models="clr-namespace:NoGaReader.Models"
+        xmlns:models="clr-namespace:NoGaReader.Models;assembly=NoGaReader.Core"
         xmlns:wv2="clr-namespace:Microsoft.Web.WebView2.Wpf;assembly=Microsoft.Web.WebView2.Wpf"
         mc:Ignorable="d"
         Title="NoGaReader"

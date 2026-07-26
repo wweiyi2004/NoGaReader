@@ -304,9 +304,6 @@ try {
 
     Write-Host "[INFO] Started isolated NoGaReader PID $($launchedProcess.Id)."
     $deadline = [datetime]::UtcNow.AddSeconds($TimeoutSeconds)
-    $mainWindow = Wait-MainWindow -Process $launchedProcess -Deadline $deadline
-    Write-Host "[PASS] Main window appeared: $($mainWindow.Current.Name)"
-
     $consoleControlNames = @(
         '打开文件',
         '打开漫画图片文件夹',
@@ -324,8 +321,16 @@ try {
         $readerControlNames += '打开漫画模式设置'
     }
 
-    $controls = @{}
-    foreach ($name in $consoleControlNames) {
+    $consoleMatch = Wait-ProcessWindowContainingElement `
+        -Process $launchedProcess `
+        -ElementName $consoleControlNames[0] `
+        -Deadline $deadline
+    $mainWindow = $consoleMatch.Window
+    Write-Host "[PASS] Main window appeared: $($mainWindow.Current.Name)"
+
+    $controls = @{ $consoleControlNames[0] = $consoleMatch.Element }
+    Write-Host "[PASS] Found '$($consoleControlNames[0])'."
+    foreach ($name in $consoleControlNames | Select-Object -Skip 1) {
         $control = Wait-NamedElement -Root $mainWindow -Name $name -Deadline $deadline
         $controls[$name] = $control
         Write-Host "[PASS] Found '$name'."

@@ -110,4 +110,43 @@ public sealed class AppSettings
     /// UI language code. Empty/system means follow OS; currently zh-CN and en-US are recognized.
     /// </summary>
     public string UiLanguage { get; set; } = string.Empty;
+
+    public AppSettings Clone()
+    {
+        var clone = new AppSettings();
+        clone.CopyFrom(this);
+        return clone;
+    }
+
+    public void CopyFrom(AppSettings source)
+    {
+        ArgumentNullException.ThrowIfNull(source);
+        Theme = source.Theme;
+        ZoomFactor = source.ZoomFactor;
+        ReaderTheme = source.ReaderTheme;
+        ReaderThemePreferenceInitialized = source.ReaderThemePreferenceInitialized;
+        ReaderFlow = source.ReaderFlow;
+        ReaderFontSize = source.ReaderFontSize;
+        UsePublisherFont = source.UsePublisherFont;
+        ReaderLineHeight = source.ReaderLineHeight;
+        ReaderContentWidth = source.ReaderContentWidth;
+        ComicDisplay = source.ComicDisplay;
+        ComicDirection = source.ComicDirection;
+        ComicFit = source.ComicFit;
+        ComicCoverSinglePage = source.ComicCoverSinglePage;
+        ComicScale = source.ComicScale;
+        TotalReadingSeconds = source.TotalReadingSeconds;
+        ReadingDates = [.. source.ReadingDates];
+        CalibreEbookConvertPath = source.CalibreEbookConvertPath;
+        ConversionOutputDirectory = source.ConversionOutputDirectory;
+        ConversionDefaultTargetExtension = source.ConversionDefaultTargetExtension;
+        SyncEnabled = source.SyncEnabled;
+        SyncProvider = source.SyncProvider;
+        SyncFolderPath = source.SyncFolderPath;
+        SyncIncludeAnnotations = source.SyncIncludeAnnotations;
+        SyncIncludeSettings = source.SyncIncludeSettings;
+        SyncSettingsModifiedUtc = source.SyncSettingsModifiedUtc;
+        LastSyncUtc = source.LastSyncUtc;
+        UiLanguage = source.UiLanguage;
+    }
 }
