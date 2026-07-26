@@ -65,13 +65,20 @@ follow-up change.
   `MobileReaderPresenter`; `ReaderPage` is a thin host that renders presenter
   state and bridges WebView, `PdfRenderer`, and dialogs. Paging bounds,
   restore math, contents mapping, and in-book link resync are smoke-tested.
+- Text annotations carry a portable `TextAnchor` (exact text plus surrounding
+  context and progress). `MobileReaderScripts` builds the capture and mount
+  JavaScript: mounting scores anchor context to disambiguate repeated text and
+  falls back to first occurrence for legacy rows; the script contract and the
+  anchor round-trip are smoke-tested.
+- The shelf state (filtering, summary/empty-state copy, continue-reading pick)
+  lives in Core as `MobileLibraryPresenter`; `MainPage` is a thin renderer.
 - The mobile chrome uses the same warm-stone palette as the desktop client,
   including the continue-reading card and the muted-surface format badges.
 
 ## Remaining Beta work
 
-- Replace the first-pass text-selection annotation bridge with the full portable
-  text-anchor runtime so annotations survive large publisher DOM changes.
+- Extend the anchor bridge with DOM-path capture (desktop `StartPath`/
+  `EndPath` parity) so anchors survive even when the visible text changes.
 - Add Android Storage Access Framework folder synchronization. The existing
   filesystem sync service cannot treat a `content://` tree URI as a normal path.
 - Add a content fingerprint migration, optimistic sync-manifest concurrency, CI

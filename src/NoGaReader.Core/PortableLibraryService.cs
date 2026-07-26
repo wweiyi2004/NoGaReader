@@ -169,6 +169,7 @@ public sealed class PortableLibraryService
         double sectionProgress,
         string selectedText,
         string? note,
+        TextAnchor? anchor = null,
         CancellationToken cancellationToken = default) =>
         _database.UpsertAnnotationAsync(new Annotation
         {
@@ -180,6 +181,7 @@ public sealed class PortableLibraryService
             SelectedText = selectedText.Trim(),
             Note = string.IsNullOrWhiteSpace(note) ? null : note.Trim(),
             Color = "yellow",
+            Anchor = anchor,
             CreatedUtc = DateTimeOffset.UtcNow,
             ModifiedUtc = DateTimeOffset.UtcNow
         }, cancellationToken);

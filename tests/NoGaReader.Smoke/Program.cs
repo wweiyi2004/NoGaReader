@@ -300,6 +300,8 @@ try
     await TestLibraryDatabaseAsync(testRoot);
     await TestPortableLibraryServiceAsync(testRoot);
     TestMobileReaderPresenter(testRoot);
+    TestMobileReaderScripts();
+    TestMobileLibraryPresenter();
     await TestBookSearchIndexerAsync(testRoot);
     TestReaderRuntimeAnnotationApi();
     await TestLibraryScannerAsync(testRoot);
@@ -1374,7 +1376,19 @@ static async Task TestPortableLibraryServiceAsync(string testRoot)
         "Portable library open restores the saved section");
 
     await service.AddBookmarkAsync(imported.Id, reopened, 0.5);
-    await service.AddTextAnnotationAsync(imported.Id, reopened, 0.5, "Second section.", "移动端笔记");
+    await service.AddTextAnnotationAsync(
+        imported.Id,
+        reopened,
+        0.5,
+        "Second section.",
+        "移动端笔记",
+        new TextAnchor
+        {
+            ExactText = "Second section.",
+            Prefix = "继续",
+            Suffix = "尾注",
+            Progress = 0.5
+        });
     var annotations = await service.ListAnnotationsAsync(imported.Id, sectionIndex: 1);
     Assert(annotations.Count == 2 &&
            annotations.Any(item => item.Type == AnnotationType.Bookmark) &&
@@ -1382,6 +1396,10 @@ static async Task TestPortableLibraryServiceAsync(string testRoot)
                                    item.SelectedText == "Second section." &&
                                    item.Note == "移动端笔记"),
         "Portable library stores bookmarks and text annotations per section");
+    var anchored = annotations.Single(item => item.Type == AnnotationType.Note);
+    Assert(anchored.Anchor is { ExactText: "Second section.", Prefix: "继续", Suffix: "尾注" } roundTripped &&
+           Math.Abs(roundTripped.Progress - 0.5) < 0.0001,
+        "Portable library persists the portable text anchor with the annotation");
 
     var hits = await service.SearchAsync(listed, reopened, "Second section");
     Assert(hits.Count >= 1 && hits[0].SectionIndex == 1,
@@ -1570,6 +1588,127 @@ static void TestMobileReaderPresenter(string testRoot)
            text.Move(1) == MobileReaderPresenter.MoveResult.None &&
            !text.CanMoveNext && !text.CanMovePrevious,
         "Presenter renders single-section documents as a bare percentage");
+}
+
+static void TestMobileReaderScripts()
+{
+    // Selection-capture parsing: the JS returns JSON or null.
+    Assert(MobileReaderScripts.ParseSelectionCapture(null) is null &&
+           MobileReaderScripts.ParseSelectionCapture("null") is null &&
+           MobileReaderScripts.ParseSelectionCapture("not json") is null &&
+           MobileReaderScripts.ParseSelectionCapture("""{"text":"  "}""") is null,
+        "Mobile capture parser rejects empty and malformed selections");
+
+    var capture = MobileReaderScripts.ParseSelectionCapture(
+        """{"text":"  引用的正文  ","prefix":"前文上下文","suffix":"后文上下文"}""");
+    Assert(capture is { Text: "引用的正文", Prefix: "前文上下文", Suffix: "后文上下文" },
+        "Mobile capture parser trims the text and keeps raw context");
+
+    foreach (var contract in new[] { "window.getSelection", "createTreeWalker", "JSON.stringify" })
+    {
+        Assert(MobileReaderScripts.SelectionCaptureScript.Contains(contract, StringComparison.Ordinal),
+            $"Mobile capture script contract: {contract}");
+    }
+
+    // Mount script: anchored, legacy (no anchor), and hostile text payloads.
+    var mountScript = MobileReaderScripts.BuildAnnotationMountScript(
+    [
+        new Annotation
+        {
+            SelectedText = "重复文本",
+            Note = "第二处的\"笔记\"",
+            Anchor = new TextAnchor { ExactText = "重复文本", Prefix = "第二段落里的", Suffix = "继续" }
+        },
+        new Annotation { SelectedText = "legacy </script> text" },
+        new Annotation { SelectedText = "   " }
+    ]);
+    // Expected payload fragments must go through the same serializer the
+    // script factory uses: the default encoder escapes CJK and quotes.
+    var expectedPrefix = System.Text.Json.JsonSerializer.Serialize("第二段落里的");
+    var expectedNote = System.Text.Json.JsonSerializer.Serialize("第二处的\"笔记\"");
+    Assert(mountScript.Contains("nogar-mobile-note", StringComparison.Ordinal) &&
+           mountScript.Contains("sort((a, b) => b.start - a.start)", StringComparison.Ordinal) &&
+           mountScript.Contains("sharedTail", StringComparison.Ordinal) &&
+           mountScript.Contains(expectedPrefix, StringComparison.Ordinal),
+        "Mobile mount script scores anchor context and highlights in descending order");
+    Assert(mountScript.Contains(expectedNote, StringComparison.Ordinal),
+        "Mobile mount script escapes quotes inside annotation payloads");
+    Assert(!mountScript.Contains("</script>", StringComparison.OrdinalIgnoreCase),
+        "Mobile mount script never embeds a raw close-script tag");
+    Assert(!mountScript.Contains("\"   \"", StringComparison.Ordinal),
+        "Mobile mount script drops whitespace-only annotations");
+}
+
+static void TestMobileLibraryPresenter()
+{
+    var presenter = new MobileLibraryPresenter();
+    var emptyView = presenter.BuildView(null);
+    Assert(presenter.Summary == "随身阅读，从一本书开始" &&
+           presenter.ContinueReading is null &&
+           emptyView.ShowEmptyState &&
+           emptyView.EmptyTitle == "书库还是空的",
+        "Library presenter renders the empty-shelf state");
+
+    presenter.SetBooks(
+    [
+        new LibraryBook
+        {
+            Id = 1,
+            Title = "尘埃之书",
+            Author = "远行者",
+            Format = ".epub",
+            LastOpenedUtc = new DateTimeOffset(2026, 7, 20, 8, 0, 0, TimeSpan.Zero),
+            Location = new ReaderLocation { DocumentProgress = 0.6 }
+        },
+        new LibraryBook
+        {
+            Id = 2,
+            Title = "Paper Atlas",
+            Format = ".pdf",
+            LastOpenedUtc = new DateTimeOffset(2026, 7, 25, 8, 0, 0, TimeSpan.Zero),
+            Location = new ReaderLocation { DocumentProgress = 0.3 }
+        },
+        new LibraryBook
+        {
+            Id = 3,
+            Title = "未开始的书",
+            Author = "远行者",
+            Format = ".txt",
+            LastOpenedUtc = new DateTimeOffset(2026, 7, 26, 8, 0, 0, TimeSpan.Zero)
+        }
+    ]);
+
+    Assert(presenter.Summary == "3 本书 · 数据仅保存在本机" &&
+           presenter.Books.Count == 3,
+        "Library presenter summarizes a populated shelf");
+    Assert(presenter.Books.Single(item => item.Book.Id == 2).Author == "未知作者" &&
+           presenter.Books.Single(item => item.Book.Id == 1).FormatLabel == "EPUB" &&
+           presenter.Books.Single(item => item.Book.Id == 3).ProgressText == "未开始" &&
+           presenter.Books.All(item => item.HasFallbackCover && !item.HasCover),
+        "Library projection normalizes author, format label, progress text, and cover fallback");
+
+    // Most recently opened *with progress* wins: book 3 is newer but unread.
+    Assert(presenter.ContinueReading is { Book.Id: 2 } &&
+           presenter.ContinueReadingSubtitle == $"{0.3:P0} · PDF",
+        "Library presenter picks the newest in-progress book to continue");
+
+    var filtered = presenter.BuildView("远行者");
+    Assert(filtered.VisibleBooks.Count == 2 &&
+           filtered.VisibleBooks.All(item => item.Author == "远行者") &&
+           !filtered.ShowEmptyState,
+        "Library presenter filters by author");
+    Assert(presenter.BuildView("PAPER").VisibleBooks.Single().Book.Id == 2,
+        "Library presenter filters titles case-insensitively");
+
+    var noMatch = presenter.BuildView("不存在的书名");
+    Assert(noMatch.ShowEmptyState &&
+           noMatch.EmptyTitle == "没有找到这本书" &&
+           noMatch.EmptyDescription == "换个书名或作者关键词再试试。",
+        "Library presenter distinguishes no-match from an empty shelf");
+
+    presenter.SetBooks([new LibraryBook { Id = 9, Title = "只导入未读", Format = ".epub" }]);
+    Assert(presenter.ContinueReading is null,
+        "Library presenter hides continue-reading when nothing has progress");
 }
 
 static async Task TestBookSearchIndexerAsync(string testRoot)

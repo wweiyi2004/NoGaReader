@@ -64,6 +64,7 @@ public sealed class MobileLibraryService
         double sectionProgress,
         string selectedText,
         string? note,
+        TextAnchor? anchor = null,
         CancellationToken cancellationToken = default) =>
-        _library.AddTextAnnotationAsync(bookId, session, sectionProgress, selectedText, note, cancellationToken);
+        _library.AddTextAnnotationAsync(bookId, session, sectionProgress, selectedText, note, anchor, cancellationToken);
 }

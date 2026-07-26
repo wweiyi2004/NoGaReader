@@ -340,37 +340,8 @@ public partial class ReaderPage : ContentPage
     private async Task ApplyAnnotationsAsync()
     {
         var annotations = await _library.ListAnnotationsAsync(_book.Id, _session.CurrentSectionIndex);
-        var payload = JsonSerializer.Serialize(annotations
-            .Where(item => !string.IsNullOrWhiteSpace(item.SelectedText))
-            .Select(item => new { text = item.SelectedText, note = item.Note }));
-        var script = $$"""
-            (() => {
-              const annotations = {{payload}};
-              for (const annotation of annotations) {
-                try {
-                  const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
-                  while (walker.nextNode()) {
-                    const node = walker.currentNode;
-                    if (node.parentElement?.closest('mark,script,style')) continue;
-                    const index = String(node.nodeValue || '').indexOf(annotation.text);
-                    if (index < 0) continue;
-                    const range = document.createRange();
-                    range.setStart(node, index);
-                    range.setEnd(node, index + annotation.text.length);
-                    const mark = document.createElement('mark');
-                    mark.className = 'nogar-mobile-note';
-                    if (annotation.note) mark.title = annotation.note;
-                    range.surroundContents(mark);
-                    break;
-                  }
-                } catch {
-                  // One unanchorable annotation must not stop the rest.
-                }
-              }
-              return annotations.length;
-            })();
-            """;
-        await DocumentWebView.EvaluateJavaScriptAsync(script);
+        await DocumentWebView.EvaluateJavaScriptAsync(
+            MobileReaderScripts.BuildAnnotationMountScript(annotations));
     }
 
     private async Task RevealSearchHitAsync(SearchHit hit)
@@ -599,10 +570,10 @@ public partial class ReaderPage : ContentPage
             return;
         }
 
-        var selectionResult = await DocumentWebView.EvaluateJavaScriptAsync("String(window.getSelection() || '')");
-        var selectedText = DecodeJavaScriptString(selectionResult);
-        selectedText = selectedText.Trim();
-        if (selectedText.Length == 0)
+        var selectionResult = await DocumentWebView.EvaluateJavaScriptAsync(
+            MobileReaderScripts.SelectionCaptureScript);
+        var capture = MobileReaderScripts.ParseSelectionCapture(DecodeJavaScriptString(selectionResult));
+        if (capture is null)
         {
             await DisplayAlert("批注", "请先在正文中选择一段文字。", "好");
             return;
@@ -611,7 +582,7 @@ public partial class ReaderPage : ContentPage
         string? note = null;
         if (action == "为所选文字写笔记")
         {
-            note = await DisplayPromptAsync("添加笔记", Shorten(selectedText, 80), "保存", "取消");
+            note = await DisplayPromptAsync("添加笔记", Shorten(capture.Text, 80), "保存", "取消");
             if (note is null)
             {
                 return;
@@ -623,8 +594,15 @@ public partial class ReaderPage : ContentPage
             _book.Id,
             _session,
             _presenter.SectionProgress,
-            selectedText,
-            note);
+            capture.Text,
+            note,
+            new TextAnchor
+            {
+                ExactText = capture.Text,
+                Prefix = capture.Prefix,
+                Suffix = capture.Suffix,
+                Progress = _presenter.SectionProgress
+            });
         await DocumentWebView.EvaluateJavaScriptAsync(
             "(() => { const s=getSelection(); if(!s||s.rangeCount===0||s.isCollapsed)return false;" +
             "const r=s.getRangeAt(0); const m=document.createElement('mark');m.className='nogar-mobile-note';" +

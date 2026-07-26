@@ -1,14 +1,18 @@
 using NoGaReader.Mobile.Services;
-using NoGaReader.Mobile.Models;
 using NoGaReader.Models;
+using NoGaReader.Services;
 
 namespace NoGaReader.Mobile;
 
+/// <summary>
+/// Thin shelf host: filtering, summary/empty-state copy, and continue-reading
+/// selection live in <see cref="MobileLibraryPresenter"/> (Core, smoke-tested);
+/// this page renders that state and bridges the picker and dialogs.
+/// </summary>
 public partial class MainPage : ContentPage
 {
     private readonly MobileLibraryService _library;
-    private IReadOnlyList<LibraryBookItem> _books = [];
-    private LibraryBookItem? _continueBook;
+    private readonly MobileLibraryPresenter _presenter = new();
 
     public MainPage(MobileLibraryService library)
     {
@@ -65,7 +69,7 @@ public partial class MainPage : ContentPage
         await OpenBookAsync(item.Book);
     }
 
-    private void OnSearchChanged(object? sender, TextChangedEventArgs e) => ApplyFilter();
+    private void OnSearchChanged(object? sender, TextChangedEventArgs e) => RenderLibrary();
 
     private async void OnRefreshing(object? sender, EventArgs e)
     {
@@ -77,10 +81,8 @@ public partial class MainPage : ContentPage
     {
         try
         {
-            _books = (await _library.ListAsync()).Select(LibraryBookItem.FromBook).ToList();
-            LibrarySummary.Text = _books.Count == 0 ? "随身阅读，从一本书开始" : $"{_books.Count} 本书 · 数据仅保存在本机";
-            UpdateContinueCard();
-            ApplyFilter();
+            _presenter.SetBooks(await _library.ListAsync());
+            RenderLibrary();
         }
         catch (Exception exception)
         {
@@ -89,46 +91,30 @@ public partial class MainPage : ContentPage
         }
     }
 
-    private void UpdateContinueCard()
+    private void RenderLibrary()
     {
-        // Mirrors the desktop dashboard's "continue reading" card: the most
-        // recently opened book that has actual progress recorded.
-        _continueBook = _books
-            .Where(item => item.Progress > 0)
-            .OrderByDescending(item => item.Book.LastOpenedUtc)
-            .FirstOrDefault();
-        ContinueCard.IsVisible = _continueBook is not null;
-        if (_continueBook is not null)
+        var view = _presenter.BuildView(LibrarySearch.Text);
+        LibrarySummary.Text = view.Summary;
+        BooksView.ItemsSource = view.VisibleBooks;
+        BooksView.IsVisible = !view.ShowEmptyState;
+        EmptyState.IsVisible = view.ShowEmptyState;
+        EmptyTitle.Text = view.EmptyTitle;
+        EmptyDescription.Text = view.EmptyDescription;
+
+        ContinueCard.IsVisible = _presenter.ContinueReading is not null;
+        if (_presenter.ContinueReading is { } continueBook)
         {
-            ContinueTitle.Text = _continueBook.Title;
-            ContinueProgress.Text = $"{_continueBook.ProgressText} · {_continueBook.FormatLabel}";
+            ContinueTitle.Text = continueBook.Title;
+            ContinueProgress.Text = _presenter.ContinueReadingSubtitle;
         }
     }
 
     private async void OnContinueClicked(object? sender, EventArgs e)
     {
-        if (_continueBook is { } item)
+        if (_presenter.ContinueReading is { } item)
         {
             await OpenBookAsync(item.Book);
         }
-    }
-
-    private void ApplyFilter()
-    {
-        var query = LibrarySearch.Text?.Trim();
-        var visibleBooks = string.IsNullOrWhiteSpace(query)
-            ? _books
-            : _books.Where(book =>
-                    book.Title.Contains(query, StringComparison.OrdinalIgnoreCase) ||
-                    book.Author.Contains(query, StringComparison.OrdinalIgnoreCase))
-                .ToList();
-        BooksView.ItemsSource = visibleBooks;
-        BooksView.IsVisible = visibleBooks.Count > 0;
-        EmptyState.IsVisible = visibleBooks.Count == 0;
-        EmptyTitle.Text = _books.Count == 0 ? "书库还是空的" : "没有找到这本书";
-        EmptyDescription.Text = _books.Count == 0
-            ? "从手机中选择一本书，导入后即可离线阅读。"
-            : "换个书名或作者关键词再试试。";
     }
 
     private async Task OpenBookAsync(LibraryBook book)
